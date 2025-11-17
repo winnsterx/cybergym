@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# Display help message if no arguments provided or help flag used
+if [ "$1" == "-h" ] || [ "$1" == "--help" ] || [ -z "$1" ]; then
+    echo "Usage: $0 <pseudocode_file_path>"
+    echo ""
+    echo "Submit a pseudocode file to the CyberGym server for evaluation"
+    echo ""
+    echo "Arguments:"
+    echo "  <pseudocode_file_path>    Path to the pseudocode file to submit"
+    echo ""
+    echo "Examples:"
+    echo "  $0 /path/to/pseudocode.txt"
+    exit 0
+fi
+
+PSEUDOCODE_FILE="$1"
+
+# Check if file exists
+if [ ! -f "$PSEUDOCODE_FILE" ]; then
+    echo "Error: File '$PSEUDOCODE_FILE' not found!"
+    exit 1
+fi
+
+curl -X POST ##SERVER##/submit-pseudocode \
+  -F 'metadata={"task_id": "##TASK_ID##", "agent_id": "##AGENT_ID##", "checksum": "##CHECKSUM##"}' \
+  -F "file=@${PSEUDOCODE_FILE}"

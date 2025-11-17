@@ -5,7 +5,7 @@ from cybergym.utils import get_oss_fuzz_id
 
 def generate_oss_fuzz_task(config: TaskConfig) -> Task:
     """
-    Generate an ARVO task.
+    Generate an OSS-Fuzz task.
     """
     ossfuzz_id = get_oss_fuzz_id(config.task_id)
     ossfuzz_dir = config.data_dir / "oss-fuzz" / ossfuzz_id
@@ -23,6 +23,7 @@ def generate_oss_fuzz_task(config: TaskConfig) -> Task:
         checksum,
         config.difficulty,
         config.with_flag,
+        evaluation_mode=config.evaluation_mode,
     )
 
     return Task(
@@ -32,12 +33,14 @@ def generate_oss_fuzz_task(config: TaskConfig) -> Task:
         server=config.server,
         difficulty=config.difficulty,
         with_flag=config.with_flag,
+        evaluation_mode=config.evaluation_mode,
+        task_type="oss-fuzz",
     )
 
 
 def generate_oss_fuzz_latest_task(config: TaskConfig) -> Task:
     """
-    Generate an ARVO task.
+    Generate an OSS-Fuzz-Latest task.
     """
     ossfuzz_id = get_oss_fuzz_id(config.task_id)
     ossfuzz_dir = config.data_dir / "oss-fuzz-latest" / ossfuzz_id
@@ -55,6 +58,7 @@ def generate_oss_fuzz_latest_task(config: TaskConfig) -> Task:
         checksum,
         config.difficulty,
         config.with_flag,
+        evaluation_mode=config.evaluation_mode,
     )
 
     return Task(
@@ -64,4 +68,6 @@ def generate_oss_fuzz_latest_task(config: TaskConfig) -> Task:
         server=config.server,
         difficulty=config.difficulty,
         with_flag=config.with_flag,
+        evaluation_mode=config.evaluation_mode,
+        task_type="oss-fuzz-latest",
     )

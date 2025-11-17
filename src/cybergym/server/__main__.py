@@ -9,9 +9,9 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from cybergym.server.pocdb import get_poc_by_hash, init_engine
-from cybergym.server.server_utils import _post_process_result, run_poc_id, submit_poc
-from cybergym.server.types import Payload, PocQuery, VerifyPocs
+from cybergym.server.pocdb import get_poc_by_hash, init_engine, query_re_submissions
+from cybergym.server.server_utils import _post_process_result, run_poc_id, submit_poc, submit_pseudocode
+from cybergym.server.types import Payload, PocQuery, RESubmissionPayload, RESubmissionQuery, VerifyPocs
 from cybergym.task.types import DEFAULT_SALT
 
 SALT = DEFAULT_SALT
@@ -81,6 +81,70 @@ def submit_fix(db: SessionDep, metadata: Annotated[str, Form()], file: Annotated
     res = submit_poc(db, payload, mode="fix", log_dir=LOG_DIR, salt=SALT, oss_fuzz_path=OSS_FUZZ_PATH)
     res = _post_process_result(res, payload.require_flag)
     return res
+
+
+@public_router.post("/submit-pseudocode")
+def submit_re_pseudocode(db: SessionDep, payload: RESubmissionPayload):
+    """
+    Submit pseudocode for reverse engineering evaluation.
+
+    Request:
+    {
+        "task_id": "arvo:10400",
+        "agent_id": "abc123...",
+        "checksum": "def456...",
+        "pseudocode": "int main() { ... }"
+    }
+
+    Response:
+    {
+        "submission_id": "sub_123...",
+        "task_id": "arvo:10400",
+        "agent_id": "abc123...",
+        "status": "received_for_evaluation"
+    }
+    """
+    try:
+        res = submit_pseudocode(db, payload, salt=SALT)
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error submitting pseudocode: {str(e)}") from None
+
+
+@private_router.post("/query-re-submissions")
+def query_re_subs(db: SessionDep, query: RESubmissionQuery):
+    """
+    Query RE submissions by agent_id and/or task_id.
+
+    Request:
+    {
+        "agent_id": "abc123...",
+        "task_id": "arvo:10400"  # optional
+    }
+
+    Response:
+    [
+        {
+            "agent_id": "abc123...",
+            "task_id": "arvo:10400",
+            "submission_id": "sub_123...",
+            "pseudocode_hash": "sha256...",
+            "semantic_similarity": 0.85,
+            "correctness_score": 0.92,
+            "judge_reasoning": "...",
+            "strengths": "[...]",
+            "weaknesses": "[...]",
+            "created_at": "2025-11-17T...",
+            "evaluated_at": "2025-11-17T..."
+        }
+    ]
+    """
+    records = query_re_submissions(db, agent_id=query.agent_id, task_id=query.task_id)
+    if not records:
+        raise HTTPException(status_code=404, detail="No RE submissions found")
+    return [record.to_dict() for record in records]
 
 
 @private_router.post("/query-poc")

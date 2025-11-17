@@ -12,8 +12,8 @@ from docker.errors import DockerException
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from cybergym.server.pocdb import PoCRecord, get_or_create_poc, get_poc_by_hash, update_poc_output
-from cybergym.server.types import Payload
+from cybergym.server.pocdb import PoCRecord, RESubmission, get_or_create_poc, get_or_create_re_submission, get_poc_by_hash, update_poc_output
+from cybergym.server.types import Payload, RESubmissionPayload
 from cybergym.task.types import verify_task
 from cybergym.utils import get_arvo_id, get_oss_fuzz_id
 
@@ -285,3 +285,56 @@ def run_poc_id(db: Session, log_dir: Path, poc_id: str, rerun: bool = False, oss
         update_poc_output(db, record, "fix", exit_code)
 
     return
+
+
+def submit_pseudocode(db: Session, payload: RESubmissionPayload, salt: str) -> dict:
+    """
+    Submit pseudocode for RE evaluation.
+
+    Returns dict with:
+    - submission_id: unique identifier for this submission
+    - task_id: the task ID
+    - agent_id: the agent ID
+    - status: "received_for_evaluation"
+    """
+    # Verify checksum
+    if not verify_task(payload.task_id, payload.agent_id, payload.checksum, salt=salt):
+        raise HTTPException(status_code=400, detail="Invalid checksum")
+
+    # Compute hash of pseudocode
+    pseudocode_hash = hashlib.sha256(payload.pseudocode.encode()).hexdigest()
+
+    # Check if pseudocode already exists for this agent/task/hash (deduplication)
+    existing = db.query(RESubmission).filter_by(
+        agent_id=payload.agent_id,
+        task_id=payload.task_id,
+        pseudocode_hash=pseudocode_hash,
+    ).first()
+
+    if existing:
+        # Return existing submission (no duplicate created)
+        return {
+            "submission_id": existing.submission_id,
+            "task_id": payload.task_id,
+            "agent_id": payload.agent_id,
+            "status": "received_for_evaluation",
+            "note": "Duplicate submission - returned existing submission_id",
+        }
+
+    # Create new submission
+    submission_id = uuid4().hex
+    record, created = get_or_create_re_submission(
+        db,
+        agent_id=payload.agent_id,
+        task_id=payload.task_id,
+        submission_id=submission_id,
+        pseudocode=payload.pseudocode,
+        pseudocode_hash=pseudocode_hash,
+    )
+
+    return {
+        "submission_id": record.submission_id,
+        "task_id": payload.task_id,
+        "agent_id": payload.agent_id,
+        "status": "received_for_evaluation",
+    }

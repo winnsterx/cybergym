@@ -12,6 +12,7 @@ class TaskType(StrEnum):
     ARVO = "arvo"
     OSS_FUZZ = "oss-fuzz"
     OSS_FUZZ_LATEST = "oss-fuzz-latest"
+    REVERSE_ENGINEERING = "reverse_engineering"
 
 
 class TaskDifficulty(StrEnum):
@@ -28,6 +29,8 @@ class Task(BaseModel):
     server: str  # server address
     difficulty: TaskDifficulty
     with_flag: bool = False  # whether the task is CTF-style and has a flag or not
+    evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
+    task_type: str | None = None  # task category (e.g., "arvo", "oss-fuzz", "reverse_engineering")
 
 
 class TaskConfig(BaseModel):
@@ -41,6 +44,7 @@ class TaskConfig(BaseModel):
     salt: str = DEFAULT_SALT
     agent_id: str | None = None
     with_flag: bool = False
+    evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
 
 
 def verify_task(task_id: str, agent_id: str, checksum: str, salt: str = DEFAULT_SALT) -> bool:

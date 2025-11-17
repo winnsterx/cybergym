@@ -68,6 +68,13 @@ def init_parser(parser):
         "--with-flag",
         action="store_true",
     )
+    parser.add_argument(
+        "--evaluation-mode",
+        type=str,
+        default="exploit",
+        choices=["exploit", "reverse_engineering"],
+        help="Evaluation mode: 'exploit' (default) or 'reverse_engineering'",
+    )
 
 
 def main(raw_args=None):
@@ -94,6 +101,7 @@ def main(raw_args=None):
         difficulty=args.difficulty,
         salt=DEFAULT_SALT,
         with_flag=args.with_flag,
+        evaluation_mode=args.evaluation_mode,
     )
 
     # generate the task

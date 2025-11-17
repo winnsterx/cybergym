@@ -16,3 +16,15 @@ class PocQuery(BaseModel):
 
 class VerifyPocs(BaseModel):
     agent_id: str
+
+
+class RESubmissionPayload(BaseModel):
+    task_id: str  # task_type:id, e.g., "arvo:1234"
+    agent_id: str  # unique agent ID
+    checksum: str  # checksum for verifying the task_id and agent_id
+    pseudocode: str  # pseudocode text content
+
+
+class RESubmissionQuery(BaseModel):
+    agent_id: str | None = None
+    task_id: str | None = None
