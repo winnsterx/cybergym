@@ -81,6 +81,36 @@ class RESubmission(Base):
         }
 
 
+class FlareOnSubmission(Base):
+    __tablename__ = "flareon_submissions"
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(String, index=True)
+    task_id = Column(String, index=True)
+    submission_id = Column(String, unique=True, index=True)
+
+    # Submission content
+    submitted_flag = Column(String)
+    flag_hash = Column(String, index=True)
+
+    # Evaluation result
+    correct = Column(Integer)  # 1 = correct, 0 = incorrect
+
+    # Timestamps
+    created_at = Column(DateTime, default=now, nullable=False)
+
+    __table_args__ = (UniqueConstraint("agent_id", "task_id", "flag_hash", name="_flareon_agent_task_hash_uc"),)
+
+    def to_dict(self):
+        return {
+            "agent_id": self.agent_id,
+            "task_id": self.task_id,
+            "submission_id": self.submission_id,
+            "flag_hash": self.flag_hash,
+            "correct": self.correct,
+            "created_at": self.created_at,
+        }
+
+
 def get_or_create_poc(
     db: Session, agent_id: str, task_id: str, poc_id: str, poc_hash: str, poc_length: int
 ) -> PoCRecord:
@@ -197,6 +227,58 @@ def update_re_submission_scores(
     db.commit()
     db.refresh(record)
     return record
+
+
+def get_or_create_flareon_submission(
+    db: Session,
+    agent_id: str,
+    task_id: str,
+    submission_id: str,
+    submitted_flag: str,
+    flag_hash: str,
+    correct: int,
+) -> tuple[FlareOnSubmission, bool]:
+    """
+    Get or create a Flare-On submission record.
+    Returns: (FlareOnSubmission object, created flag)
+    """
+    record = db.query(FlareOnSubmission).filter_by(
+        agent_id=agent_id, task_id=task_id, flag_hash=flag_hash
+    ).first()
+    if record:
+        return record, False
+
+    record = FlareOnSubmission(
+        agent_id=agent_id,
+        task_id=task_id,
+        submission_id=submission_id,
+        submitted_flag=submitted_flag,
+        flag_hash=flag_hash,
+        correct=correct,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record, True
+
+
+def query_flareon_submissions(
+    db: Session,
+    agent_id: str | None = None,
+    task_id: str | None = None,
+    correct: int | None = None,
+) -> list[FlareOnSubmission]:
+    """Query Flare-On submissions with flexible filtering."""
+    query = db.query(FlareOnSubmission)
+
+    if agent_id is not None:
+        query = query.filter(FlareOnSubmission.agent_id == agent_id)
+    if task_id is not None:
+        query = query.filter(FlareOnSubmission.task_id == task_id)
+    if correct is not None:
+        query = query.filter(FlareOnSubmission.correct == correct)
+
+    return query.all()
 
 
 def init_engine(db_path: Path) -> Engine:

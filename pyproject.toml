@@ -28,6 +28,11 @@ dev = [
     "matplotlib>=3.10.1",
     "tomli-w>=1.2.0",
     "simple-parsing>=0.1.7",
+    "pytest>=7.0.0",
+    "pytest-mock>=3.0.0",
+    "python-dotenv>=1.0.0",
+    "tqdm>=4.66.0",
+    "sqlalchemy>=2.0.0",
 ]
 server = [
     "docker>=7.1.0",
@@ -57,3 +62,18 @@ select = ["E", "F", "B", "I", "N", "UP", "S", "A", "C4", "DTZ", "T10", "ISC"]
 ignore = ["E501"]
 
 line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "integration: marks tests as integration tests (may be slower)",
+    "unit: marks tests as unit tests (fast)",
+]

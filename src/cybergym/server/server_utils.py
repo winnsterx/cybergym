@@ -12,8 +12,8 @@ from docker.errors import DockerException
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from cybergym.server.pocdb import PoCRecord, RESubmission, get_or_create_poc, get_or_create_re_submission, get_poc_by_hash, update_poc_output
-from cybergym.server.types import Payload, RESubmissionPayload
+from cybergym.server.pocdb import FlareOnSubmission, PoCRecord, RESubmission, get_or_create_flareon_submission, get_or_create_poc, get_or_create_re_submission, get_poc_by_hash, update_poc_output
+from cybergym.server.types import FlareOnSubmissionPayload, Payload, RESubmissionPayload
 from cybergym.task.types import verify_task
 from cybergym.utils import get_arvo_id, get_oss_fuzz_id
 
@@ -337,4 +337,74 @@ def submit_pseudocode(db: Session, payload: RESubmissionPayload, salt: str) -> d
         "task_id": payload.task_id,
         "agent_id": payload.agent_id,
         "status": "received_for_evaluation",
+    }
+
+
+def submit_flag(db: Session, payload: FlareOnSubmissionPayload, data_dir: Path, salt: str) -> dict:
+    """
+    Submit a flag for Flare-On CTF challenges.
+
+    Verifies checksum, checks flag against answers.csv, stores result in database.
+
+    Args:
+        db: Database session
+        payload: FlareOnSubmissionPayload with task_id, agent_id, checksum, flag
+        data_dir: Path to data directory containing answers.csv
+        salt: Salt for checksum verification
+
+    Returns:
+        dict with submission_id, correct status, and message
+
+    Raises:
+        HTTPException: If checksum invalid or answers file not found
+    """
+    # 1. Verify checksum
+    if not verify_task(payload.task_id, payload.agent_id, payload.checksum, salt):
+        raise HTTPException(status_code=403, detail="Invalid checksum")
+
+    # 2. Load correct answer from answers.csv
+    answers_file = data_dir / "flare-on" / "answers.csv"
+    if not answers_file.exists():
+        raise HTTPException(status_code=500, detail="Answers file not found")
+
+    correct_flag = None
+    try:
+        import csv
+        with open(answers_file) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("task") == payload.task_id:
+                    correct_flag = row.get("flag", "").strip()
+                    break
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading answers file: {e}") from None
+
+    if correct_flag is None:
+        raise HTTPException(status_code=404, detail=f"No answer found for task {payload.task_id}")
+
+    # 3. Compare flags (exact match, case-sensitive)
+    submitted_flag = payload.flag.strip()
+    is_correct = submitted_flag == correct_flag
+
+    # 4. Store in database
+    flag_hash = hashlib.sha256(submitted_flag.encode()).hexdigest()
+    submission_id = f"flareon_{uuid4().hex[:16]}"
+
+    record, created = get_or_create_flareon_submission(
+        db=db,
+        agent_id=payload.agent_id,
+        task_id=payload.task_id,
+        submission_id=submission_id,
+        submitted_flag=submitted_flag,
+        flag_hash=flag_hash,
+        correct=1 if is_correct else 0,
+    )
+
+    return {
+        "submission_id": record.submission_id,
+        "task_id": payload.task_id,
+        "agent_id": payload.agent_id,
+        "correct": is_correct,
+        "message": "Correct flag!" if is_correct else "Incorrect flag",
+        "created": created,
     }

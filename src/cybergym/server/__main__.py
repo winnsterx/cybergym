@@ -9,15 +9,16 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from cybergym.server.pocdb import get_poc_by_hash, init_engine, query_re_submissions
-from cybergym.server.server_utils import _post_process_result, run_poc_id, submit_poc, submit_pseudocode
-from cybergym.server.types import Payload, PocQuery, RESubmissionPayload, RESubmissionQuery, VerifyPocs
+from cybergym.server.pocdb import get_poc_by_hash, init_engine, query_flareon_submissions, query_re_submissions
+from cybergym.server.server_utils import _post_process_result, run_poc_id, submit_flag, submit_poc, submit_pseudocode
+from cybergym.server.types import FlareOnSubmissionPayload, FlareOnSubmissionQuery, Payload, PocQuery, RESubmissionPayload, RESubmissionQuery, VerifyPocs
 from cybergym.task.types import DEFAULT_SALT
 
 SALT = DEFAULT_SALT
 LOG_DIR = Path("./logs")
 DB_PATH = Path("./poc.db")
 OSS_FUZZ_PATH = Path("./oss-fuzz-data")
+DATA_DIR = Path("./cybergym_data/data")
 API_KEY = "cybergym-030a0cd7-5908-4862-8ab9-91f2bfc7b56d"
 API_KEY_NAME = "X-API-Key"
 
@@ -113,6 +114,38 @@ def submit_re_pseudocode(db: SessionDep, payload: RESubmissionPayload):
         raise HTTPException(status_code=500, detail=f"Error submitting pseudocode: {str(e)}") from None
 
 
+@public_router.post("/submit-flag")
+def submit_flare_on_flag(db: SessionDep, payload: FlareOnSubmissionPayload):
+    """
+    Submit a flag for Flare-On CTF challenge.
+
+    Request:
+    {
+        "task_id": "flare-on:2024-01",
+        "agent_id": "abc123...",
+        "checksum": "def456...",
+        "flag": "flag-1234"
+    }
+
+    Response:
+    {
+        "submission_id": "flareon_abc123...",
+        "task_id": "flare-on:2024-01",
+        "agent_id": "abc123...",
+        "correct": true,
+        "message": "Correct flag!",
+        "created": true
+    }
+    """
+    try:
+        res = submit_flag(db, payload, data_dir=DATA_DIR, salt=SALT)
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error submitting flag: {str(e)}") from None
+
+
 @private_router.post("/query-re-submissions")
 def query_re_subs(db: SessionDep, query: RESubmissionQuery):
     """
@@ -144,6 +177,38 @@ def query_re_subs(db: SessionDep, query: RESubmissionQuery):
     records = query_re_submissions(db, agent_id=query.agent_id, task_id=query.task_id)
     if not records:
         raise HTTPException(status_code=404, detail="No RE submissions found")
+    return [record.to_dict() for record in records]
+
+
+@private_router.post("/query-flareon-submissions")
+def query_flareon_subs(db: SessionDep, query: FlareOnSubmissionQuery):
+    """
+    Query Flare-On submissions by agent_id, task_id, and/or correctness.
+
+    Request:
+    {
+        "agent_id": "abc123...",
+        "task_id": "flare-on:2024-01",  # optional
+        "correct": 1  # optional: 1 = correct, 0 = incorrect
+    }
+
+    Response:
+    [
+        {
+            "agent_id": "abc123...",
+            "task_id": "flare-on:2024-01",
+            "submission_id": "flareon_abc123...",
+            "flag_hash": "sha256...",
+            "correct": 1,
+            "created_at": "2025-11-20T..."
+        }
+    ]
+    """
+    records = query_flareon_submissions(
+        db, agent_id=query.agent_id, task_id=query.task_id, correct=query.correct
+    )
+    if not records:
+        raise HTTPException(status_code=404, detail="No Flare-On submissions found")
     return [record.to_dict() for record in records]
 
 
@@ -185,6 +250,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_dir", type=Path, default=LOG_DIR, help="Directory to store logs")
     parser.add_argument("--db_path", type=Path, default=DB_PATH, help="Path to SQLite DB")
     parser.add_argument("--cybergym_oss_fuzz_path", type=Path, default=OSS_FUZZ_PATH, help="Path to OSS-Fuzz")
+    parser.add_argument("--data_dir", type=Path, default=DATA_DIR, help="Path to CyberGym data directory")
 
     args = parser.parse_args()
     SALT = args.salt
@@ -194,5 +260,7 @@ if __name__ == "__main__":
     DB_PATH = Path(args.db_path)
 
     OSS_FUZZ_PATH = Path(args.cybergym_oss_fuzz_path)
+
+    DATA_DIR = Path(args.data_dir)
 
     uvicorn.run(app, host=args.host, port=args.port)

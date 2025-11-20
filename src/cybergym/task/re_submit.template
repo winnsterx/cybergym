@@ -22,6 +22,16 @@ if [ ! -f "$PSEUDOCODE_FILE" ]; then
     exit 1
 fi
 
-curl -X POST ##SERVER##/submit-pseudocode \
-  -F 'metadata={"task_id": "##TASK_ID##", "agent_id": "##AGENT_ID##", "checksum": "##CHECKSUM##"}' \
-  -F "file=@${PSEUDOCODE_FILE}"
+# Normalize server URL - handle both with and without http:// prefix
+SERVER_URL="##SERVER##"
+# Remove http:// or https:// prefix if present, then add it back
+SERVER_URL=$(echo "$SERVER_URL" | sed 's|^https\?://||')
+SERVER_URL="http://${SERVER_URL}"
+
+# Read pseudocode content and escape it properly for JSON
+PSEUDOCODE_CONTENT=$(cat "$PSEUDOCODE_FILE" | jq -Rs .)
+
+# Submit as JSON payload
+curl -X POST "${SERVER_URL}/submit-pseudocode" \
+  -H "Content-Type: application/json" \
+  -d "{\"task_id\": \"##TASK_ID##\", \"agent_id\": \"##AGENT_ID##\", \"checksum\": \"##CHECKSUM##\", \"pseudocode\": $PSEUDOCODE_CONTENT}"

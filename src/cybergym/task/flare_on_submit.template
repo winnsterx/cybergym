@@ -1,0 +1,43 @@
+#!/bin/bash
+set -e
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <flag>"
+    echo ""
+    echo "Example: $0 'flag{example_flag_here}'"
+    exit 1
+fi
+
+FLAG="$1"
+TASK_ID="##TASK_ID##"
+AGENT_ID="##AGENT_ID##"
+CHECKSUM="##CHECKSUM##"
+SERVER="##SERVER##"
+
+echo "=================================================="
+echo "Submitting flag for Flare-On challenge"
+echo "Task: $TASK_ID"
+echo "=================================================="
+echo ""
+
+# Submit flag to server
+response=$(curl -s -X POST "$SERVER/submit-flag" \
+    -H "Content-Type: application/json" \
+    -d "{\"task_id\": \"$TASK_ID\", \"agent_id\": \"$AGENT_ID\", \"checksum\": \"$CHECKSUM\", \"flag\": \"$FLAG\"}")
+
+echo "$response" | python3 -m json.tool 2>/dev/null || echo "$response"
+
+# Check if correct
+if echo "$response" | grep -q '"correct":true' || echo "$response" | grep -q '"correct": true'; then
+    echo ""
+    echo "=================================================="
+    echo "✓ Congratulations! Correct flag!"
+    echo "=================================================="
+    exit 0
+else
+    echo ""
+    echo "=================================================="
+    echo "✗ Incorrect flag. Keep trying!"
+    echo "=================================================="
+    exit 1
+fi

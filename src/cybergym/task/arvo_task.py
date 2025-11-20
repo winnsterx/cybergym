@@ -1,11 +1,7 @@
-import io
 import logging
 import shutil
-import tarfile
 from pathlib import Path
 from typing import Literal
-
-import docker
 
 from cybergym.utils import get_arvo_id
 
@@ -47,22 +43,22 @@ DIFFICULTY_FILES: dict[TaskDifficulty, list[str]] = {
 RE_DIFFICULTY_FILES: dict[TaskDifficulty, list[str]] = {
     TaskDifficulty.level0: [
         # Level 0: binary only - no hints
-        "binary.vul",
+        "binaries/*",
     ],
     TaskDifficulty.level1: [
         # Level 1: binary + hints (if available)
-        "binary.vul",
+        "binaries/*",
         "hints.txt",
     ],
     TaskDifficulty.level2: [
         # Level 2: binary + hints + example output
-        "binary.vul",
+        "binaries/*",
         "hints.txt",
         "output_example.txt",
     ],
     TaskDifficulty.level3: [
         # Level 3: binary + all available hints
-        "binary.vul",
+        "binaries/*",
         "hints.txt",
         "output_example.txt",
     ],
@@ -70,68 +66,50 @@ RE_DIFFICULTY_FILES: dict[TaskDifficulty, list[str]] = {
 
 # File descriptions for RE mode README
 RE_ARVO_FILES = {
-    "binary.vul": "executable to reverse engineer",
+    "binaries/*": "executable(s) to reverse engineer",
     "hints.txt": "high-level functionality hints",
     "output_example.txt": "example output of the binary",
 }
 
 
-def extract_binary_from_docker(arvo_id: str, mode: Literal["vul", "fix"] = "vul") -> Path | None:
+def copy_binaries_from_executables(task_id: str, dest_dir: Path, mode: Literal["vul", "fix"] = "vul", executables_dir: Path = None) -> bool:
     """
-    Extract the actual binary from the ARVO Docker image and return path to extracted binary.
+    Copy all binaries from the executables/ directory to the destination.
 
-    The /bin/arvo wrapper script calls the actual fuzzer binary located at /out/coder_*_fuzzer.
-    We use docker cp to efficiently extract the binary without needing to start/stop the container.
-    Returns None if extraction fails.
+    Copies all files from executables/{project}-{task_num}-{mode}/ to dest_dir.
+    Returns True if successful, False otherwise.
     """
-    client = docker.from_env()
-    container = None
+    if executables_dir is None:
+        # Default to executables/ in the project root
+        executables_dir = Path(__file__).parent.parent.parent.parent / "executables"
 
-    try:
-        image_name = f"n132/arvo:{arvo_id}-{mode}"
-        logger.debug(f"Extracting binary from Docker image: {image_name}")
+    # Extract project and task number from task_id
+    project, task_num = task_id.split(":")
+    source_dir = executables_dir / f"{project}-{task_num}-{mode}"
 
-        # Create a temporary container (don't start it yet)
-        container = client.containers.create(image=image_name)
-        container_id = container.id
+    if not source_dir.exists():
+        logger.warning(f"Executables directory not found: {source_dir}")
+        return False
 
-        # Get the list of fuzzer binaries from the image
-        # We'll use get_archive to find them
-        bits, stat = container.get_archive("/out")
-        tar_data = b"".join(bits)
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # Extract tar to find first fuzzer binary
-        with tarfile.open(fileobj=io.BytesIO(tar_data)) as tar:
-            fuzzer_files = [m for m in tar.getmembers() if "coder_" in m.name and "_fuzzer" in m.name and m.isfile()]
-            if not fuzzer_files:
-                logger.warning(f"No fuzzer binary found in {image_name}")
-                return None
+    # Copy all files from source directory to destination
+    copied_count = 0
+    for file in source_dir.iterdir():
+        if file.is_file():
+            dest_file = dest_dir / file.name
+            shutil.copy2(file, dest_file)
+            # Preserve executable permissions
+            dest_file.chmod(file.stat().st_mode)
+            logger.debug(f"Copied {file.name} to {dest_file}")
+            copied_count += 1
 
-            # Extract the first fuzzer binary
-            member = fuzzer_files[0]
-            logger.debug(f"Found fuzzer binary: {member.name}")
+    if copied_count == 0:
+        logger.warning(f"No files found in {source_dir}")
+        return False
 
-            extracted_file = tar.extractfile(member)
-            binary_data = extracted_file.read()
-
-            # Create a temporary file to store the binary
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(binary_data)
-                tmp_path = Path(tmp.name)
-                tmp_path.chmod(0o755)  # Make it executable
-                logger.debug(f"Extracted binary ({len(binary_data)} bytes) to temporary location: {tmp_path}")
-                return tmp_path
-
-    except Exception as e:
-        logger.warning(f"Failed to extract binary from Docker image {arvo_id}-{mode}: {e}")
-        return None
-    finally:
-        if container:
-            try:
-                container.remove(force=True)
-            except Exception:
-                pass  # Silently ignore removal errors
+    logger.info(f"Copied {copied_count} file(s) from {source_dir} to {dest_dir}")
+    return True
 
 
 def prepare_arvo_files(
@@ -153,28 +131,19 @@ def prepare_arvo_files(
 
     if evaluation_mode == "reverse_engineering":
         # RE mode: binary + optional hints only
-        # Check if binary is already cached in arvo_dir
-        arvo_id = get_arvo_id(task_id)
-        cached_binary = arvo_dir / "binary.vul"
+        # Copy binaries from executables directory to arvo_dir
+        binaries_dir = arvo_dir / "binaries"
 
-        if not cached_binary.exists():
-            # Extract binary from Docker image and cache it
-            logger.debug(f"Binary not found at {cached_binary}, extracting from Docker...")
-            binary_path = extract_binary_from_docker(arvo_id, mode="vul")
-            if binary_path:
-                # Save to cache location in data directory
-                cached_binary.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(binary_path, cached_binary)
-                logger.info(f"Extracted and cached binary to {cached_binary}")
-                # Clean up temporary file
-                try:
-                    binary_path.unlink()
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temporary binary: {e}")
+        if not binaries_dir.exists() or not any(binaries_dir.iterdir()):
+            # Copy binaries from executables directory
+            logger.debug(f"Binaries not found at {binaries_dir}, copying from executables/...")
+            success = copy_binaries_from_executables(task_id, binaries_dir, mode="vul")
+            if success:
+                logger.info(f"Copied binaries from executables to {binaries_dir}")
             else:
-                logger.warning("Failed to extract binary from Docker image, continuing without it")
+                logger.warning("Failed to copy binaries from executables directory, continuing without them")
         else:
-            logger.debug(f"Using cached binary from {cached_binary}")
+            logger.debug(f"Using cached binaries from {binaries_dir}")
 
         # Add optional hints based on difficulty
         globs_to_copy = RE_DIFFICULTY_FILES.get(difficulty, [])
@@ -186,11 +155,7 @@ def prepare_arvo_files(
 
     for glob_pat in globs_to_copy:
         for file in arvo_dir.glob(glob_pat):
-            # Special handling: rename binary.vul to binary in output
-            if file.name == "binary.vul":
-                to_file = out_dir / "binary"
-            else:
-                to_file = out_dir / file.relative_to(arvo_dir)
+            to_file = out_dir / file.relative_to(arvo_dir)
             to_file.parent.mkdir(parents=True, exist_ok=True)
             logger.debug(f"Copying {file} to {to_file}")
             if file.is_dir():
