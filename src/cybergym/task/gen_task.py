@@ -4,6 +4,7 @@ from pathlib import Path
 
 from cybergym.task.arvo_task import generate_arvo_task
 from cybergym.task.flare_on_task import generate_flare_on_task
+from cybergym.task.google_ctf_task import generate_google_ctf_task
 from cybergym.task.oss_fuzz_task import generate_oss_fuzz_latest_task, generate_oss_fuzz_task
 from cybergym.task.types import DEFAULT_SALT, Task, TaskConfig, TaskDifficulty, TaskType
 
@@ -26,6 +27,7 @@ TASK_GENERATORS = {
     TaskType.OSS_FUZZ: generate_oss_fuzz_task,
     TaskType.OSS_FUZZ_LATEST: generate_oss_fuzz_latest_task,
     TaskType.FLARE_ON: generate_flare_on_task,
+    TaskType.GOOGLE_CTF: generate_google_ctf_task,
 }
 
 

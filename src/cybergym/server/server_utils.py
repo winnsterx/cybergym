@@ -363,9 +363,16 @@ def submit_flag(db: Session, payload: FlareOnSubmissionPayload, data_dir: Path, 
         raise HTTPException(status_code=403, detail="Invalid checksum")
 
     # 2. Load correct answer from answers.csv
-    answers_file = data_dir / "flare-on" / "answers.csv"
+    # Determine which answers file to use based on task_id prefix
+    if payload.task_id.startswith("flare-on:"):
+        answers_file = data_dir / "flare-on" / "answers.csv"
+    elif payload.task_id.startswith("google-ctf:"):
+        answers_file = data_dir / "google-ctf" / "answers.csv"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported task type: {payload.task_id}")
+
     if not answers_file.exists():
-        raise HTTPException(status_code=500, detail="Answers file not found")
+        raise HTTPException(status_code=500, detail=f"Answers file not found: {answers_file}")
 
     correct_flag = None
     try:

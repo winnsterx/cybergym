@@ -52,12 +52,11 @@ class RESubmission(Base):
     pseudocode = Column(String)
     pseudocode_hash = Column(String, index=True)
 
-    # Evaluation results
-    semantic_similarity = Column(Float, nullable=True)
-    correctness_score = Column(Float, nullable=True)
-    judge_reasoning = Column(String, nullable=True)
-    strengths = Column(String, nullable=True)  # JSON list
-    weaknesses = Column(String, nullable=True)  # JSON list
+    # Evaluation results (new format)
+    readability_score = Column(Float, nullable=True)
+    helpfulness_score = Column(Float, nullable=True)
+    both_score = Column(Float, nullable=True)
+    detailed_scores = Column(String, nullable=True)  # JSON with all 12 criteria scores
 
     # Timestamps
     created_at = Column(DateTime, default=now, nullable=False)
@@ -71,11 +70,10 @@ class RESubmission(Base):
             "task_id": self.task_id,
             "submission_id": self.submission_id,
             "pseudocode_hash": self.pseudocode_hash,
-            "semantic_similarity": self.semantic_similarity,
-            "correctness_score": self.correctness_score,
-            "judge_reasoning": self.judge_reasoning,
-            "strengths": self.strengths,
-            "weaknesses": self.weaknesses,
+            "readability_score": self.readability_score,
+            "helpfulness_score": self.helpfulness_score,
+            "both_score": self.both_score,
+            "detailed_scores": self.detailed_scores,
             "created_at": self.created_at,
             "evaluated_at": self.evaluated_at,
         }
@@ -205,23 +203,30 @@ def query_re_submissions(
 def update_re_submission_scores(
     db: Session,
     submission_id: str,
-    semantic_similarity: float,
-    correctness_score: float,
-    judge_reasoning: str,
-    strengths: str | None = None,
-    weaknesses: str | None = None,
+    readability_score: float,
+    helpfulness_score: float,
+    both_score: float,
+    detailed_scores: str,
 ) -> RESubmission:
-    """Update evaluation scores for a RE submission."""
+    """Update evaluation scores for a RE submission.
+
+    Args:
+        db: Database session
+        submission_id: Submission identifier
+        readability_score: Aggregate score for Readability category
+        helpfulness_score: Aggregate score for Helpfulness category
+        both_score: Aggregate score for Both category
+        detailed_scores: JSON string containing all 12 criteria scores
+    """
     record = db.query(RESubmission).filter_by(submission_id=submission_id).first()
     if not record:
         msg = f"Submission {submission_id} not found"
         raise ValueError(msg)
 
-    record.semantic_similarity = semantic_similarity
-    record.correctness_score = correctness_score
-    record.judge_reasoning = judge_reasoning
-    record.strengths = strengths
-    record.weaknesses = weaknesses
+    record.readability_score = readability_score
+    record.helpfulness_score = helpfulness_score
+    record.both_score = both_score
+    record.detailed_scores = detailed_scores
     record.evaluated_at = now()
 
     db.commit()

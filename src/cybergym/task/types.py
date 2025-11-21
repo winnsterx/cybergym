@@ -14,6 +14,7 @@ class TaskType(StrEnum):
     OSS_FUZZ_LATEST = "oss-fuzz-latest"
     REVERSE_ENGINEERING = "reverse_engineering"
     FLARE_ON = "flare-on"
+    GOOGLE_CTF = "google-ctf"
 
 
 class TaskDifficulty(StrEnum):

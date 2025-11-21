@@ -36,7 +36,7 @@ sys.path.insert(0, str(SCRIPT_DIR / "examples/agents/openhands"))
 
 from run import LLMArgs, OpenhandsArgs, TaskArgs as OpenhandsTaskArgs, run_with_configs
 
-from cybergym.eval import get_evaluation_paths
+from cybergym.eval import get_evaluation_paths, parse_judge_evaluation
 from cybergym.task.types import TaskDifficulty
 
 # Setup logger
@@ -263,6 +263,9 @@ def run_judge_for_submission(
         with open(evaluation_file) as f:
             scores = json.load(f)
 
+        # Parse the new judge evaluation format
+        readability_score, helpfulness_score, both_score, detailed_scores_json = parse_judge_evaluation(scores)
+
         from cybergym.server.pocdb import now
         with Session(engine) as session:
             db_submission = session.query(RESubmission).filter_by(
@@ -270,11 +273,10 @@ def run_judge_for_submission(
             ).first()
 
             if db_submission:
-                db_submission.semantic_similarity = scores.get("semantic_similarity", 0.0)
-                db_submission.correctness_score = scores.get("correctness_score", 0.0)
-                db_submission.judge_reasoning = scores.get("judge_reasoning", "")
-                db_submission.strengths = json.dumps(scores.get("strengths", []))
-                db_submission.weaknesses = json.dumps(scores.get("weaknesses", []))
+                db_submission.readability_score = readability_score
+                db_submission.helpfulness_score = helpfulness_score
+                db_submission.both_score = both_score
+                db_submission.detailed_scores = detailed_scores_json
                 db_submission.evaluated_at = now()
                 session.commit()
 
@@ -357,8 +359,8 @@ def collect_run_metrics(
         "status": "success" if agent_success else "failed",
     }
 
-    # For flare-on mode, only track correct/incorrect
-    if evaluation_mode == "flare-on":
+    # For CTF mode, only track correct/incorrect
+    if evaluation_mode == "ctf":
         if not agent_success:
             result["error"] = agent_error
             result["correct"] = False
@@ -389,15 +391,16 @@ def collect_run_metrics(
                         result["correct"] = False
 
         except Exception as e:
-            logger.warning(f"Failed to query flare-on submissions for {task_id} run {run_number}: {e}")
+            logger.warning(f"Failed to query CTF submissions for {task_id} run {run_number}: {e}")
             result["error"] = f"Failed to query submissions: {str(e)}"
             result["correct"] = False
 
         return result
 
-    # For RE mode, add semantic_similarity and correctness_score fields and try to load evaluation.json
-    result["semantic_similarity"] = None
-    result["correctness_score"] = None
+    # For RE mode, add score fields and try to load evaluation.json
+    result["readability_score"] = None
+    result["helpfulness_score"] = None
+    result["both_score"] = None
 
     if not agent_success:
         result["error"] = agent_error
@@ -415,9 +418,13 @@ def collect_run_metrics(
             with open(evaluation_file) as f:
                 scores = json.load(f)
 
-            result["semantic_similarity"] = scores.get("semantic_similarity")
-            result["correctness_score"] = scores.get("correctness_score")
-            result["judge_reasoning"] = scores.get("judge_reasoning", "")
+            # Parse the new judge evaluation format
+            readability_score, helpfulness_score, both_score, detailed_scores_json = parse_judge_evaluation(scores)
+
+            result["readability_score"] = readability_score
+            result["helpfulness_score"] = helpfulness_score
+            result["both_score"] = both_score
+            result["detailed_scores"] = detailed_scores_json
 
         except Exception as e:
             logger.warning(f"Failed to read evaluation file for {task_id} run {run_number}: {e}")
@@ -522,7 +529,7 @@ def main():
         "--evaluation-mode",
         type=str,
         default="reverse_engineering",
-        choices=["exploit", "reverse_engineering", "flare-on"],
+        choices=["exploit", "reverse_engineering", "ctf"],
         help="Evaluation mode (default: reverse_engineering)",
     )
 
@@ -825,10 +832,10 @@ def main():
         task_run_metrics[task_id].append(run_metrics)
 
     print("\nPer-task results:")
-    is_flareon_mode = args.evaluation_mode == "flare-on"
+    is_ctf_mode = args.evaluation_mode == "ctf"
     for task_id in sorted(task_results.keys()):
         stats = task_results[task_id]
-        if is_flareon_mode:
+        if is_ctf_mode:
             # Calculate solve rate from run metrics
             run_results = task_run_metrics.get(task_id, [])
             solved = sum(1 for r in run_results if r.get("correct") == True)
@@ -859,9 +866,9 @@ def main():
             for task_id, agent_id, error in judge_failed_list:
                 print(f"  ✗ {task_id} agent {agent_id}: {error}")
 
-    # Print overall solve rate for Flare-On mode
-    is_flareon_mode = args.evaluation_mode == "flare-on"
-    if is_flareon_mode:
+    # Print overall solve rate for CTF mode
+    is_ctf_mode = args.evaluation_mode == "ctf"
+    if is_ctf_mode:
         total_solved = sum(
             sum(1 for r in task_run_metrics.get(tid, []) if r.get("correct") == True)
             for tid in task_results.keys()
@@ -896,10 +903,10 @@ def main():
     }
 
     # Add task-level statistics with per-run metrics (task_run_metrics already collected earlier)
-    is_flareon_mode = args.evaluation_mode == "flare-on"
+    is_ctf_mode = args.evaluation_mode == "ctf"
 
-    if is_flareon_mode:
-        # For Flare-On: track solve rate
+    if is_ctf_mode:
+        # For CTF mode: track solve rate
         total_solved = 0
         for task_id in sorted(task_results.keys()):
             stats = task_results[task_id]
@@ -918,36 +925,43 @@ def main():
                 "run_results": run_results,
             }
 
-        # Overall metrics for Flare-On
+        # Overall metrics for CTF mode
         summary_data["overall_metrics"] = {
             "total_runs": len(agent_results),
             "total_solved": total_solved,
             "solve_rate": total_solved / len(agent_results) if agent_results else 0,
         }
     else:
-        # For RE mode: extract semantic similarity and correctness scores
-        all_semantic_similarities = []
-        all_correctness_scores = []
+        # For RE mode: extract readability, helpfulness, and both scores
+        all_readability_scores = []
+        all_helpfulness_scores = []
+        all_both_scores = []
 
         for task_id in sorted(task_results.keys()):
             stats = task_results[task_id]
             run_results = task_run_metrics.get(task_id, [])
 
             # Extract metrics for successful runs
-            task_semantic_similarities = [
-                r["semantic_similarity"]
+            task_readability_scores = [
+                r["readability_score"]
                 for r in run_results
-                if r["semantic_similarity"] is not None
+                if r["readability_score"] is not None
             ]
-            task_correctness_scores = [
-                r["correctness_score"]
+            task_helpfulness_scores = [
+                r["helpfulness_score"]
                 for r in run_results
-                if r["correctness_score"] is not None
+                if r["helpfulness_score"] is not None
+            ]
+            task_both_scores = [
+                r["both_score"]
+                for r in run_results
+                if r["both_score"] is not None
             ]
 
             # Add to overall metrics
-            all_semantic_similarities.extend(task_semantic_similarities)
-            all_correctness_scores.extend(task_correctness_scores)
+            all_readability_scores.extend(task_readability_scores)
+            all_helpfulness_scores.extend(task_helpfulness_scores)
+            all_both_scores.extend(task_both_scores)
 
             summary_data["tasks"][task_id] = {
                 "runs": stats["total"],
@@ -956,15 +970,17 @@ def main():
                 "success_rate": stats["success"] / stats["total"] if stats["total"] > 0 else 0,
                 "run_results": run_results,
                 "metrics": {
-                    "semantic_similarity": calculate_statistics(task_semantic_similarities),
-                    "correctness_score": calculate_statistics(task_correctness_scores),
+                    "readability_score": calculate_statistics(task_readability_scores),
+                    "helpfulness_score": calculate_statistics(task_helpfulness_scores),
+                    "both_score": calculate_statistics(task_both_scores),
                 },
             }
 
         # Overall metrics for RE mode
         summary_data["overall_metrics"] = {
-            "semantic_similarity": calculate_statistics(all_semantic_similarities),
-            "correctness_score": calculate_statistics(all_correctness_scores),
+            "readability_score": calculate_statistics(all_readability_scores),
+            "helpfulness_score": calculate_statistics(all_helpfulness_scores),
+            "both_score": calculate_statistics(all_both_scores),
         }
 
     # Add judge statistics if RE mode

@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
-FLARE_ON_README_TEMPLATE = SCRIPT_DIR / "FLAREON.template"
+FLARE_ON_README_TEMPLATE = SCRIPT_DIR / "flareon.template"
 FLARE_ON_SUBMIT_TEMPLATE = SCRIPT_DIR / "flare_on_submit.template"
 
 
@@ -288,6 +288,6 @@ def generate_flare_on_task(config: TaskConfig) -> Task:
         server=config.server,
         difficulty=config.difficulty,
         with_flag=True,  # Flare-On always has flags
-        evaluation_mode="flare-on",
+        evaluation_mode="ctf",
         task_type="flare-on",
     )

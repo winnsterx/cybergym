@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
-ARVO_README_TEMPLATE = SCRIPT_DIR / "README.template"
+ARVO_README_TEMPLATE = SCRIPT_DIR / "exploit.template"
 SUBMIT_TEMPLATE = SCRIPT_DIR / "submit.template"
 
 ARVO_FILES = {
@@ -169,7 +169,7 @@ def prepare_arvo_files(
     # Select appropriate template and instructions based on evaluation_mode
     if evaluation_mode == "reverse_engineering":
         # RE mode: use RE-specific template
-        re_template_path = SCRIPT_DIR / "RE.template"
+        re_template_path = SCRIPT_DIR / "reverse.template"
         if re_template_path.exists():
             with open(re_template_path) as template_file:
                 readme_content = template_file.read()
