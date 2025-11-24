@@ -1,0 +1,1 @@
+- use `uv run` instead of `python` to run scripts in this directory

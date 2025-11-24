@@ -154,6 +154,7 @@ def run_judge_for_submission(
     api_key: str | None,
     base_url: str,
     repo: Path,
+    grading_schema: str,
 ) -> tuple[str, str, bool, str | None]:
     """
     Run judge evaluation for a single submission using run.py in judge mode.
@@ -263,8 +264,9 @@ def run_judge_for_submission(
         with open(evaluation_file) as f:
             scores = json.load(f)
 
-        # Parse the new judge evaluation format
-        readability_score, helpfulness_score, both_score, detailed_scores_json = parse_judge_evaluation(scores)
+        # Parse judge evaluation using specified grading schema
+        category_scores_dict, detailed_scores_json = parse_judge_evaluation(scores, grading_schema)
+        category_scores_json = json.dumps(category_scores_dict)
 
         from cybergym.server.pocdb import now
         with Session(engine) as session:
@@ -273,9 +275,8 @@ def run_judge_for_submission(
             ).first()
 
             if db_submission:
-                db_submission.readability_score = readability_score
-                db_submission.helpfulness_score = helpfulness_score
-                db_submission.both_score = both_score
+                db_submission.grading_schema = grading_schema
+                db_submission.category_scores = category_scores_json
                 db_submission.detailed_scores = detailed_scores_json
                 db_submission.evaluated_at = now()
                 session.commit()
@@ -338,6 +339,7 @@ def collect_run_metrics(
     agent_success: bool,
     agent_error: str | None,
     evaluation_mode: str = "reverse_engineering",
+    grading_schema: str = "five-point",
 ) -> dict:
     """
     Collect metrics for a single run from the evaluation.json file or database.
@@ -397,17 +399,34 @@ def collect_run_metrics(
 
         return result
 
-    # For RE mode, add score fields and try to load evaluation.json
-    result["readability_score"] = None
-    result["helpfulness_score"] = None
-    result["both_score"] = None
-
+    # For RE mode, load category scores from database or evaluation file
     if not agent_success:
         result["error"] = agent_error
+        result["category_scores"] = {}
         return result
-    evaluation_file = eval_paths.judge_evaluation_path(task_id, run_number)
 
-    # Also check in workspace subdirectory for backward compatibility
+    # Try to get scores from database first
+    try:
+        from sqlalchemy.orm import Session
+        from cybergym.server.pocdb import init_engine, query_re_submissions
+
+        db_path = eval_paths.database_path
+        engine = init_engine(db_path)
+        with Session(engine) as session:
+            submissions = query_re_submissions(session, task_id=task_id)
+
+            if submissions:
+                submission = submissions[0]  # Get first submission for this task
+                if submission.category_scores:
+                    result["category_scores"] = json.loads(submission.category_scores)
+                    result["grading_schema"] = submission.grading_schema
+                    result["detailed_scores"] = submission.detailed_scores
+                    return result
+    except Exception as e:
+        logger.warning(f"Failed to query RE submissions for {task_id} run {run_number}: {e}")
+
+    # Fallback to reading evaluation file
+    evaluation_file = eval_paths.judge_evaluation_path(task_id, run_number)
     if not evaluation_file.exists():
         workspace_eval = eval_paths.judge_workspace_dir(task_id, run_number) / "evaluation.json"
         if workspace_eval.exists():
@@ -418,19 +437,18 @@ def collect_run_metrics(
             with open(evaluation_file) as f:
                 scores = json.load(f)
 
-            # Parse the new judge evaluation format
-            readability_score, helpfulness_score, both_score, detailed_scores_json = parse_judge_evaluation(scores)
-
-            result["readability_score"] = readability_score
-            result["helpfulness_score"] = helpfulness_score
-            result["both_score"] = both_score
+            category_scores_dict, detailed_scores_json = parse_judge_evaluation(scores, grading_schema)
+            result["category_scores"] = category_scores_dict
+            result["grading_schema"] = grading_schema
             result["detailed_scores"] = detailed_scores_json
 
         except Exception as e:
             logger.warning(f"Failed to read evaluation file for {task_id} run {run_number}: {e}")
             result["error"] = f"Failed to read evaluation: {str(e)}"
+            result["category_scores"] = {}
     else:
         result["error"] = "Evaluation file not found"
+        result["category_scores"] = {}
 
     return result
 
@@ -570,6 +588,12 @@ def main():
         type=int,
         default=100,
         help="Maximum iterations for judge (default: 100)",
+    )
+    parser.add_argument(
+        "--grading-schema",
+        type=str,
+        default="five-point",
+        help="Grading schema to use for evaluation (default: five-point)",
     )
 
     # Debug/development options
@@ -712,6 +736,7 @@ def main():
                                         api_key,
                                         args.base_url,
                                         args.repo,
+                                        args.grading_schema,
                                     )
                                     judge_future = pool.apply_async(run_judge_wrapper, (judge_args,))
                                     judge_futures[judge_future] = (task_id, agent_id)
@@ -770,6 +795,7 @@ def main():
                     api_key,
                     args.base_url,
                     args.repo,
+                    args.grading_schema,
                 )
                 judge_result = run_judge_for_submission(*judge_args)
                 judge_results.append(judge_result)
@@ -828,6 +854,7 @@ def main():
             agent_success=success,
             agent_error=error,
             evaluation_mode=args.evaluation_mode,
+            grading_schema=args.grading_schema,
         )
         task_run_metrics[task_id].append(run_metrics)
 
@@ -932,36 +959,32 @@ def main():
             "solve_rate": total_solved / len(agent_results) if agent_results else 0,
         }
     else:
-        # For RE mode: extract readability, helpfulness, and both scores
-        all_readability_scores = []
-        all_helpfulness_scores = []
-        all_both_scores = []
+        # For RE mode: extract category scores dynamically based on grading schema
+        all_category_scores = {}  # category_name -> list of scores
 
         for task_id in sorted(task_results.keys()):
             stats = task_results[task_id]
             run_results = task_run_metrics.get(task_id, [])
 
-            # Extract metrics for successful runs
-            task_readability_scores = [
-                r["readability_score"]
-                for r in run_results
-                if r["readability_score"] is not None
-            ]
-            task_helpfulness_scores = [
-                r["helpfulness_score"]
-                for r in run_results
-                if r["helpfulness_score"] is not None
-            ]
-            task_both_scores = [
-                r["both_score"]
-                for r in run_results
-                if r["both_score"] is not None
-            ]
+            # Collect scores by category across all runs
+            task_category_scores = {}
+            for run_result in run_results:
+                category_scores = run_result.get("category_scores", {})
+                for category, score in category_scores.items():
+                    if category not in task_category_scores:
+                        task_category_scores[category] = []
+                    task_category_scores[category].append(score)
 
             # Add to overall metrics
-            all_readability_scores.extend(task_readability_scores)
-            all_helpfulness_scores.extend(task_helpfulness_scores)
-            all_both_scores.extend(task_both_scores)
+            for category, scores in task_category_scores.items():
+                if category not in all_category_scores:
+                    all_category_scores[category] = []
+                all_category_scores[category].extend(scores)
+
+            # Compute statistics for this task
+            task_metrics = {}
+            for category, scores in task_category_scores.items():
+                task_metrics[category] = calculate_statistics(scores)
 
             summary_data["tasks"][task_id] = {
                 "runs": stats["total"],
@@ -969,19 +992,16 @@ def main():
                 "failed": stats["failed"],
                 "success_rate": stats["success"] / stats["total"] if stats["total"] > 0 else 0,
                 "run_results": run_results,
-                "metrics": {
-                    "readability_score": calculate_statistics(task_readability_scores),
-                    "helpfulness_score": calculate_statistics(task_helpfulness_scores),
-                    "both_score": calculate_statistics(task_both_scores),
-                },
+                "metrics": task_metrics,
             }
 
         # Overall metrics for RE mode
-        summary_data["overall_metrics"] = {
-            "readability_score": calculate_statistics(all_readability_scores),
-            "helpfulness_score": calculate_statistics(all_helpfulness_scores),
-            "both_score": calculate_statistics(all_both_scores),
-        }
+        overall_metrics = {}
+        for category, scores in all_category_scores.items():
+            overall_metrics[category] = calculate_statistics(scores)
+
+        summary_data["overall_metrics"] = overall_metrics
+        summary_data["grading_schema"] = args.grading_schema
 
     # Add judge statistics if RE mode
     if is_re_mode and judge_results:

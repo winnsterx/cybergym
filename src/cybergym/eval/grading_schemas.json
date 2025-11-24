@@ -1,0 +1,18 @@
+{
+  "five-point": {
+    "description": "5-point scale with 4 categories and 10 sub-criteria",
+    "categories": {
+      "behavioral_correctness": [-2, 2],
+      "data_model_clarity": [-2, 2],
+      "naming_quality": [-2, 2],
+      "readability": [-2, 2]
+    }
+  },
+  "simple": {
+    "description": "Simple 2-category direct scoring",
+    "categories": {
+      "readability": [0, 1],
+      "helpfulness": [0, 1]
+    }
+  }
+}

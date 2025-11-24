@@ -52,11 +52,10 @@ class RESubmission(Base):
     pseudocode = Column(String)
     pseudocode_hash = Column(String, index=True)
 
-    # Evaluation results (new format)
-    readability_score = Column(Float, nullable=True)
-    helpfulness_score = Column(Float, nullable=True)
-    both_score = Column(Float, nullable=True)
-    detailed_scores = Column(String, nullable=True)  # JSON with all 12 criteria scores
+    # Evaluation results (flexible schema support)
+    grading_schema = Column(String, nullable=True)  # Schema name (e.g., "five-point", "simple")
+    category_scores = Column(String, nullable=True)  # JSON dict of category -> score
+    detailed_scores = Column(String, nullable=True)  # Full evaluation JSON
 
     # Timestamps
     created_at = Column(DateTime, default=now, nullable=False)
@@ -70,9 +69,8 @@ class RESubmission(Base):
             "task_id": self.task_id,
             "submission_id": self.submission_id,
             "pseudocode_hash": self.pseudocode_hash,
-            "readability_score": self.readability_score,
-            "helpfulness_score": self.helpfulness_score,
-            "both_score": self.both_score,
+            "grading_schema": self.grading_schema,
+            "category_scores": self.category_scores,
             "detailed_scores": self.detailed_scores,
             "created_at": self.created_at,
             "evaluated_at": self.evaluated_at,
@@ -203,9 +201,8 @@ def query_re_submissions(
 def update_re_submission_scores(
     db: Session,
     submission_id: str,
-    readability_score: float,
-    helpfulness_score: float,
-    both_score: float,
+    grading_schema: str,
+    category_scores: str,
     detailed_scores: str,
 ) -> RESubmission:
     """Update evaluation scores for a RE submission.
@@ -213,19 +210,17 @@ def update_re_submission_scores(
     Args:
         db: Database session
         submission_id: Submission identifier
-        readability_score: Aggregate score for Readability category
-        helpfulness_score: Aggregate score for Helpfulness category
-        both_score: Aggregate score for Both category
-        detailed_scores: JSON string containing all 12 criteria scores
+        grading_schema: Name of grading schema used (e.g., "five-point", "simple")
+        category_scores: JSON string mapping category names to normalized scores
+        detailed_scores: JSON string containing full evaluation structure
     """
     record = db.query(RESubmission).filter_by(submission_id=submission_id).first()
     if not record:
         msg = f"Submission {submission_id} not found"
         raise ValueError(msg)
 
-    record.readability_score = readability_score
-    record.helpfulness_score = helpfulness_score
-    record.both_score = both_score
+    record.grading_schema = grading_schema
+    record.category_scores = category_scores
     record.detailed_scores = detailed_scores
     record.evaluated_at = now()
 

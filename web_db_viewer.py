@@ -252,10 +252,8 @@ class DBViewerHandler(BaseHTTPRequestHandler):
                     <tr>
                         <th>Task ID</th>
                         <th>Agent ID (first 8)</th>
-                        <th>Readability</th>
-                        <th>Helpfulness</th>
-                        <th>Both</th>
-                        <th>Overall</th>
+                        <th>Schema</th>
+                        <th>Scores</th>
                         <th>Created</th>
                         <th>Evaluated</th>
                     </tr>
@@ -367,18 +365,26 @@ class DBViewerHandler(BaseHTTPRequestHandler):
                 const row = document.createElement('tr');
                 row.onclick = () => loadSubmissionDetail(sub.submission_id);
 
-                // Calculate overall score (average of all three)
-                const overall = (sub.readability_score !== null && sub.helpfulness_score !== null && sub.both_score !== null)
-                    ? (sub.readability_score + sub.helpfulness_score + sub.both_score) / 3
-                    : null;
+                // Parse category scores
+                let scoresHTML = 'N/A';
+                if (sub.category_scores) {
+                    try {
+                        const scores = JSON.parse(sub.category_scores);
+                        const scoreEntries = Object.entries(scores).map(([cat, score]) => {
+                            const shortCat = cat.split('_').map(w => w[0].toUpperCase()).join('');
+                            return `<span class="score ${getScoreClass(score)}">${shortCat}: ${formatScore(score)}</span>`;
+                        }).join(' ');
+                        scoresHTML = scoreEntries;
+                    } catch (e) {
+                        scoresHTML = 'Error';
+                    }
+                }
 
                 row.innerHTML = `
                     <td>${sub.task_id}</td>
                     <td><code>${sub.agent_id.substring(0, 8)}</code></td>
-                    <td><span class="score ${getScoreClass(sub.readability_score)}">${formatScore(sub.readability_score)}</span></td>
-                    <td><span class="score ${getScoreClass(sub.helpfulness_score)}">${formatScore(sub.helpfulness_score)}</span></td>
-                    <td><span class="score ${getScoreClass(sub.both_score)}">${formatScore(sub.both_score)}</span></td>
-                    <td><span class="score ${getScoreClass(overall)}">${formatScore(overall)}</span></td>
+                    <td>${sub.grading_schema || 'N/A'}</td>
+                    <td>${scoresHTML}</td>
                     <td>${sub.created_at}</td>
                     <td>${sub.evaluated_at || 'Not evaluated'}</td>
                 `;
@@ -396,12 +402,30 @@ class DBViewerHandler(BaseHTTPRequestHandler):
 
                 const detailContent = document.getElementById('detail-content');
 
-                // Calculate overall score
-                const overall = (sub.readability_score !== null && sub.helpfulness_score !== null && sub.both_score !== null)
-                    ? (sub.readability_score + sub.helpfulness_score + sub.both_score) / 3
-                    : null;
+                // Helper to format snake_case to Title Case
+                const formatCriterion = (str) => str.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
-                // Parse detailed scores
+                // Parse category scores
+                let categoryScoresHTML = '';
+                if (sub.category_scores) {
+                    try {
+                        const scores = JSON.parse(sub.category_scores);
+                        categoryScoresHTML = '<h3>Category Scores</h3><div class="metadata">';
+                        for (const [category, score] of Object.entries(scores)) {
+                            categoryScoresHTML += `
+                                <div class="metadata-item">
+                                    <div class="metadata-label">${formatCriterion(category)}</div>
+                                    <div class="metadata-value"><span class="score ${getScoreClass(score)}">${formatScore(score)}</span></div>
+                                </div>
+                            `;
+                        }
+                        categoryScoresHTML += '</div>';
+                    } catch (e) {
+                        categoryScoresHTML = '<p>Error parsing category scores</p>';
+                    }
+                }
+
+                // Parse detailed scores (per-criterion breakdown)
                 let detailedScoresHTML = '';
                 if (sub.detailed_scores) {
                     try {
@@ -409,35 +433,38 @@ class DBViewerHandler(BaseHTTPRequestHandler):
 
                         detailedScoresHTML = '<h3>Detailed Scoring Breakdown</h3>';
 
-                        // Helper to format snake_case to Title Case
-                        const formatCriterion = (str) => str.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                        // Dynamically render all categories
+                        for (const [category, criteria] of Object.entries(scores)) {
+                            if (category === 'summary') continue; // Skip summary section
 
-                        // Readability section
-                        if (scores.readability) {
-                            detailedScoresHTML += '<h4>Readability Criteria</h4><ul>';
-                            for (const [criterion, data] of Object.entries(scores.readability)) {
-                                const scoreClass = data.score === 1 ? 'high' : (data.score === 0 ? 'medium' : 'low');
-                                detailedScoresHTML += `<li><strong>${formatCriterion(criterion)}:</strong> <span class="score ${scoreClass}">${data.score}</span></li>`;
+                            if (typeof criteria === 'object' && criteria !== null) {
+                                detailedScoresHTML += `<h4>${formatCriterion(category)}</h4><ul>`;
+                                for (const [criterion, data] of Object.entries(criteria)) {
+                                    if (typeof data === 'object' && 'score' in data) {
+                                        // Map score to color class (-2 to 2 scale)
+                                        let scoreClass = 'medium';
+                                        if (data.score >= 1) scoreClass = 'high';
+                                        else if (data.score <= -1) scoreClass = 'low';
+
+                                        detailedScoresHTML += `<li><strong>${formatCriterion(criterion)}:</strong> <span class="score ${scoreClass}">${data.score}</span>`;
+                                        if (data.reasoning) {
+                                            detailedScoresHTML += `<br><small style="color: #666;">${data.reasoning}</small>`;
+                                        }
+                                        detailedScoresHTML += `</li>`;
+                                    }
+                                }
+                                detailedScoresHTML += '</ul>';
                             }
-                            detailedScoresHTML += '</ul>';
                         }
 
-                        // Helpfulness section
-                        if (scores.helpfulness) {
-                            detailedScoresHTML += '<h4>Helpfulness Criteria</h4><ul>';
-                            for (const [criterion, data] of Object.entries(scores.helpfulness)) {
-                                const scoreClass = data.score === 1 ? 'high' : (data.score === 0 ? 'medium' : 'low');
-                                detailedScoresHTML += `<li><strong>${formatCriterion(criterion)}:</strong> <span class="score ${scoreClass}">${data.score}</span></li>`;
+                        // Show summary if present
+                        if (scores.summary) {
+                            detailedScoresHTML += '<h4>Summary</h4><ul>';
+                            if (scores.summary.total_score !== undefined) {
+                                detailedScoresHTML += `<li><strong>Total Score:</strong> ${scores.summary.total_score} / ${scores.summary.max_possible || 20}</li>`;
                             }
-                            detailedScoresHTML += '</ul>';
-                        }
-
-                        // Both section
-                        if (scores.both) {
-                            detailedScoresHTML += '<h4>Both (Readability & Helpfulness) Criteria</h4><ul>';
-                            for (const [criterion, data] of Object.entries(scores.both)) {
-                                const scoreClass = data.score === 1 ? 'high' : (data.score === 0 ? 'medium' : 'low');
-                                detailedScoresHTML += `<li><strong>${formatCriterion(criterion)}:</strong> <span class="score ${scoreClass}">${data.score}</span></li>`;
+                            if (scores.summary.overall_assessment) {
+                                detailedScoresHTML += `<li><strong>Assessment:</strong> ${scores.summary.overall_assessment}</li>`;
                             }
                             detailedScoresHTML += '</ul>';
                         }
@@ -462,20 +489,8 @@ class DBViewerHandler(BaseHTTPRequestHandler):
                             <div class="metadata-value"><code>${sub.submission_id}</code></div>
                         </div>
                         <div class="metadata-item">
-                            <div class="metadata-label">Readability Score</div>
-                            <div class="metadata-value"><span class="score ${getScoreClass(sub.readability_score)}">${formatScore(sub.readability_score)}</span></div>
-                        </div>
-                        <div class="metadata-item">
-                            <div class="metadata-label">Helpfulness Score</div>
-                            <div class="metadata-value"><span class="score ${getScoreClass(sub.helpfulness_score)}">${formatScore(sub.helpfulness_score)}</span></div>
-                        </div>
-                        <div class="metadata-item">
-                            <div class="metadata-label">Both Score</div>
-                            <div class="metadata-value"><span class="score ${getScoreClass(sub.both_score)}">${formatScore(sub.both_score)}</span></div>
-                        </div>
-                        <div class="metadata-item">
-                            <div class="metadata-label">Overall Score</div>
-                            <div class="metadata-value"><span class="score ${getScoreClass(overall)}">${formatScore(overall)}</span></div>
+                            <div class="metadata-label">Grading Schema</div>
+                            <div class="metadata-value">${sub.grading_schema || 'N/A'}</div>
                         </div>
                         <div class="metadata-item">
                             <div class="metadata-label">Created</div>
@@ -487,6 +502,7 @@ class DBViewerHandler(BaseHTTPRequestHandler):
                         </div>
                     </div>
 
+                    ${categoryScoresHTML}
                     ${detailedScoresHTML}
 
                     <h3>Pseudocode</h3>
@@ -566,9 +582,8 @@ class DBViewerHandler(BaseHTTPRequestHandler):
                 agent_id,
                 task_id,
                 submission_id,
-                readability_score,
-                helpfulness_score,
-                both_score,
+                grading_schema,
+                category_scores,
                 created_at,
                 evaluated_at
             FROM re_submissions
@@ -581,9 +596,8 @@ class DBViewerHandler(BaseHTTPRequestHandler):
                 "agent_id": row["agent_id"],
                 "task_id": row["task_id"],
                 "submission_id": row["submission_id"],
-                "readability_score": row["readability_score"],
-                "helpfulness_score": row["helpfulness_score"],
-                "both_score": row["both_score"],
+                "grading_schema": row["grading_schema"],
+                "category_scores": row["category_scores"],
                 "created_at": row["created_at"],
                 "evaluated_at": row["evaluated_at"],
             })
@@ -615,9 +629,8 @@ class DBViewerHandler(BaseHTTPRequestHandler):
             "task_id": row["task_id"],
             "submission_id": row["submission_id"],
             "pseudocode": row["pseudocode"],
-            "readability_score": row["readability_score"],
-            "helpfulness_score": row["helpfulness_score"],
-            "both_score": row["both_score"],
+            "grading_schema": row["grading_schema"],
+            "category_scores": row["category_scores"],
             "detailed_scores": row["detailed_scores"],
             "created_at": row["created_at"],
             "evaluated_at": row["evaluated_at"],
