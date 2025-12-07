@@ -6,14 +6,23 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-import docker
-import requests
-from docker.errors import DockerException
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from cybergym.server.pocdb import FlareOnSubmission, PoCRecord, RESubmission, get_or_create_flareon_submission, get_or_create_poc, get_or_create_re_submission, get_poc_by_hash, update_poc_output
-from cybergym.server.types import FlareOnSubmissionPayload, Payload, RESubmissionPayload
+
+def _get_docker_client():
+    """Lazy import docker to avoid import errors on Modal."""
+    import docker
+    return docker.from_env()
+
+
+def _get_docker_exception():
+    """Lazy import DockerException."""
+    from docker.errors import DockerException
+    return DockerException
+
+from cybergym.server.pocdb import CTFSubmission, PoCRecord, RESubmission, get_or_create_ctf_submission, get_or_create_poc, get_or_create_re_submission, get_poc_by_hash, update_poc_output
+from cybergym.server.types import CTFSubmissionPayload, Payload, RESubmissionPayload
 from cybergym.task.types import verify_task
 from cybergym.utils import get_arvo_id, get_oss_fuzz_id
 
@@ -47,7 +56,9 @@ def run_arvo_container(
     docker_timeout: int = DEFAULT_DOCKER_TIMEOUT,
     cmd_timeout: int = DEFAULT_CMD_TIMEOUT,
 ):
-    client = docker.from_env()
+    import requests
+    client = _get_docker_client()
+    DockerException = _get_docker_exception()
     container = None
     try:
         cmd = ["/bin/bash", "-c", f"timeout -s SIGKILL {cmd_timeout} /bin/arvo 2>&1"]
@@ -93,7 +104,9 @@ def run_oss_fuzz_container(
     docker_timeout: int = DEFAULT_DOCKER_TIMEOUT,
     cmd_timeout: int = DEFAULT_CMD_TIMEOUT,
 ):
-    client = docker.from_env()
+    import requests
+    client = _get_docker_client()
+    DockerException = _get_docker_exception()
     container = None
     try:
         if is_integer(oss_fuzz_id):
@@ -340,15 +353,15 @@ def submit_pseudocode(db: Session, payload: RESubmissionPayload, salt: str) -> d
     }
 
 
-def submit_flag(db: Session, payload: FlareOnSubmissionPayload, data_dir: Path, salt: str) -> dict:
+def submit_flag(db: Session, payload: CTFSubmissionPayload, data_dir: Path, salt: str) -> dict:
     """
-    Submit a flag for Flare-On CTF challenges.
+    Submit a flag for CTF challenges (Flare-On, Google CTF, etc.).
 
     Verifies checksum, checks flag against answers.csv, stores result in database.
 
     Args:
         db: Database session
-        payload: FlareOnSubmissionPayload with task_id, agent_id, checksum, flag
+        payload: CTFSubmissionPayload with task_id, agent_id, checksum, flag
         data_dir: Path to data directory containing answers.csv
         salt: Salt for checksum verification
 
@@ -368,6 +381,8 @@ def submit_flag(db: Session, payload: FlareOnSubmissionPayload, data_dir: Path, 
         answers_file = data_dir / "flare-on" / "answers.csv"
     elif payload.task_id.startswith("google-ctf:"):
         answers_file = data_dir / "google-ctf" / "answers.csv"
+    elif payload.task_id.startswith("defcon-ooo:"):
+        answers_file = data_dir / "defcon-ooo" / "answers.csv"
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported task type: {payload.task_id}")
 
@@ -395,9 +410,9 @@ def submit_flag(db: Session, payload: FlareOnSubmissionPayload, data_dir: Path, 
 
     # 4. Store in database
     flag_hash = hashlib.sha256(submitted_flag.encode()).hexdigest()
-    submission_id = f"flareon_{uuid4().hex[:16]}"
+    submission_id = f"ctf_{uuid4().hex[:16]}"
 
-    record, created = get_or_create_flareon_submission(
+    record, created = get_or_create_ctf_submission(
         db=db,
         agent_id=payload.agent_id,
         task_id=payload.task_id,

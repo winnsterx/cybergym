@@ -15,7 +15,7 @@ CHECKSUM="##CHECKSUM##"
 SERVER="##SERVER##"
 
 echo "=================================================="
-echo "Submitting flag for Flare-On challenge"
+echo "Submitting flag for CTF challenge"
 echo "Task: $TASK_ID"
 echo "=================================================="
 echo ""

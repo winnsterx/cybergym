@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from cybergym.task.arvo_task import generate_arvo_task
+from cybergym.task.defcon_ooo_task import generate_defcon_ooo_task
 from cybergym.task.flare_on_task import generate_flare_on_task
 from cybergym.task.google_ctf_task import generate_google_ctf_task
 from cybergym.task.oss_fuzz_task import generate_oss_fuzz_latest_task, generate_oss_fuzz_task
@@ -28,6 +29,7 @@ TASK_GENERATORS = {
     TaskType.OSS_FUZZ_LATEST: generate_oss_fuzz_latest_task,
     TaskType.FLARE_ON: generate_flare_on_task,
     TaskType.GOOGLE_CTF: generate_google_ctf_task,
+    TaskType.DEFCON_OOO: generate_defcon_ooo_task,
 }
 
 

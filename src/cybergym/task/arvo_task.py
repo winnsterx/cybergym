@@ -5,7 +5,7 @@ from typing import Literal
 
 from cybergym.utils import get_arvo_id
 
-from .types import Task, TaskConfig, TaskDifficulty, generate_agent_id_and_checksum
+from .types import Task, TaskConfig, TaskDifficulty, RUBRICS, generate_agent_id_and_checksum
 
 # Set up a basic logger
 logger = logging.getLogger(__name__)
@@ -122,6 +122,7 @@ def prepare_arvo_files(
     difficulty: TaskDifficulty,
     with_flag: bool = False,
     evaluation_mode: str = "exploit",
+    rubric: str = "five-point",
 ):
     """
     Prepare the ARVO files for the task.
@@ -230,6 +231,12 @@ def prepare_arvo_files(
     with open(readme_path, "w") as readme_file:
         readme_file.write(readme_content)
 
+    # Copy ghidra manual and rubric for RE mode
+    if evaluation_mode == "reverse_engineering":
+        shutil.copy(SCRIPT_DIR / "ghidra_manual.md", out_dir / "ghidra_manual.md")
+        rubric_file = RUBRICS.get(rubric, RUBRICS["five-point"])[0]
+        shutil.copy(SCRIPT_DIR / rubric_file, out_dir / "rubric.md")
+
 
 def generate_arvo_task(config: TaskConfig) -> Task:
     """
@@ -252,6 +259,7 @@ def generate_arvo_task(config: TaskConfig) -> Task:
         config.difficulty,
         config.with_flag,
         evaluation_mode=config.evaluation_mode,
+        rubric=config.rubric,
     )
 
     return Task(
@@ -263,4 +271,5 @@ def generate_arvo_task(config: TaskConfig) -> Task:
         with_flag=config.with_flag,
         evaluation_mode=config.evaluation_mode,
         task_type="arvo",
+        rubric=config.rubric,
     )

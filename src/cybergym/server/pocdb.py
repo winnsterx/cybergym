@@ -52,14 +52,12 @@ class RESubmission(Base):
     pseudocode = Column(String)
     pseudocode_hash = Column(String, index=True)
 
-    # Evaluation results (flexible schema support)
-    grading_schema = Column(String, nullable=True)  # Schema name (e.g., "five-point", "simple")
-    category_scores = Column(String, nullable=True)  # JSON dict of category -> score
-    detailed_scores = Column(String, nullable=True)  # Full evaluation JSON
+    # Multi-judge evaluation support
+    # JSON array: [{"judge_number": 0, "grading_schema": "...", "category_scores": {...}, "detailed_scores": "...", "evaluated_at": "..."}, ...]
+    evaluations = Column(String, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=now, nullable=False)
-    evaluated_at = Column(DateTime, nullable=True)
 
     __table_args__ = (UniqueConstraint("agent_id", "task_id", "pseudocode_hash", name="_agent_task_hash_uc"),)
 
@@ -68,17 +66,15 @@ class RESubmission(Base):
             "agent_id": self.agent_id,
             "task_id": self.task_id,
             "submission_id": self.submission_id,
+            "pseudocode": self.pseudocode,
             "pseudocode_hash": self.pseudocode_hash,
-            "grading_schema": self.grading_schema,
-            "category_scores": self.category_scores,
-            "detailed_scores": self.detailed_scores,
+            "evaluations": self.evaluations,
             "created_at": self.created_at,
-            "evaluated_at": self.evaluated_at,
         }
 
 
-class FlareOnSubmission(Base):
-    __tablename__ = "flareon_submissions"
+class CTFSubmission(Base):
+    __tablename__ = "ctf_submissions"
     id = Column(Integer, primary_key=True)
     agent_id = Column(String, index=True)
     task_id = Column(String, index=True)
@@ -94,13 +90,14 @@ class FlareOnSubmission(Base):
     # Timestamps
     created_at = Column(DateTime, default=now, nullable=False)
 
-    __table_args__ = (UniqueConstraint("agent_id", "task_id", "flag_hash", name="_flareon_agent_task_hash_uc"),)
+    __table_args__ = (UniqueConstraint("agent_id", "task_id", "flag_hash", name="_ctf_agent_task_hash_uc"),)
 
     def to_dict(self):
         return {
             "agent_id": self.agent_id,
             "task_id": self.task_id,
             "submission_id": self.submission_id,
+            "submitted_flag": self.submitted_flag,
             "flag_hash": self.flag_hash,
             "correct": self.correct,
             "created_at": self.created_at,
@@ -198,38 +195,133 @@ def query_re_submissions(
     return db.query(RESubmission).filter_by(**filters).all()
 
 
-def update_re_submission_scores(
+def add_judge_evaluation(
     db: Session,
     submission_id: str,
+    judge_number: int,
     grading_schema: str,
-    category_scores: str,
+    category_scores: dict,
     detailed_scores: str,
 ) -> RESubmission:
-    """Update evaluation scores for a RE submission.
+    """Add a judge evaluation to a RE submission.
 
     Args:
         db: Database session
         submission_id: Submission identifier
+        judge_number: Index of judge evaluation (0, 1, 2, ...)
         grading_schema: Name of grading schema used (e.g., "five-point", "simple")
-        category_scores: JSON string mapping category names to normalized scores
+        category_scores: Dict mapping category names to scores
         detailed_scores: JSON string containing full evaluation structure
+
+    Returns:
+        Updated RESubmission record
     """
+    import json
+
     record = db.query(RESubmission).filter_by(submission_id=submission_id).first()
     if not record:
         msg = f"Submission {submission_id} not found"
         raise ValueError(msg)
 
-    record.grading_schema = grading_schema
-    record.category_scores = category_scores
-    record.detailed_scores = detailed_scores
-    record.evaluated_at = now()
+    # Parse existing evaluations or start fresh
+    evaluations = json.loads(record.evaluations) if record.evaluations else []
+
+    # Create new evaluation entry
+    evaluation = {
+        "judge_number": judge_number,
+        "grading_schema": grading_schema,
+        "category_scores": category_scores,
+        "detailed_scores": detailed_scores,
+        "evaluated_at": now().isoformat(),
+    }
+
+    # Check if this judge_number already exists and replace, or append
+    existing_idx = next((i for i, e in enumerate(evaluations) if e["judge_number"] == judge_number), None)
+    if existing_idx is not None:
+        evaluations[existing_idx] = evaluation
+    else:
+        evaluations.append(evaluation)
+
+    record.evaluations = json.dumps(evaluations)
 
     db.commit()
     db.refresh(record)
     return record
 
 
-def get_or_create_flareon_submission(
+def get_judge_evaluation(
+    db: Session,
+    submission_id: str,
+    judge_number: int,
+) -> dict | None:
+    """Get a specific judge evaluation from a submission.
+
+    Args:
+        db: Database session
+        submission_id: Submission identifier
+        judge_number: Index of judge evaluation to retrieve
+
+    Returns:
+        Evaluation dict or None if not found
+    """
+    import json
+
+    record = db.query(RESubmission).filter_by(submission_id=submission_id).first()
+    if not record or not record.evaluations:
+        return None
+
+    evaluations = json.loads(record.evaluations)
+    for e in evaluations:
+        if e["judge_number"] == judge_number:
+            return e
+    return None
+
+
+def get_all_evaluations(
+    db: Session,
+    submission_id: str,
+) -> list[dict]:
+    """Get all judge evaluations for a submission.
+
+    Args:
+        db: Database session
+        submission_id: Submission identifier
+
+    Returns:
+        List of evaluation dicts (empty if none)
+    """
+    import json
+
+    record = db.query(RESubmission).filter_by(submission_id=submission_id).first()
+    if not record or not record.evaluations:
+        return []
+
+    return json.loads(record.evaluations)
+
+
+def count_evaluations(
+    db: Session,
+    submission_id: str,
+) -> int:
+    """Count number of judge evaluations for a submission.
+
+    Args:
+        db: Database session
+        submission_id: Submission identifier
+
+    Returns:
+        Number of evaluations
+    """
+    import json
+
+    record = db.query(RESubmission).filter_by(submission_id=submission_id).first()
+    if not record or not record.evaluations:
+        return 0
+
+    return len(json.loads(record.evaluations))
+
+
+def get_or_create_ctf_submission(
     db: Session,
     agent_id: str,
     task_id: str,
@@ -237,18 +329,18 @@ def get_or_create_flareon_submission(
     submitted_flag: str,
     flag_hash: str,
     correct: int,
-) -> tuple[FlareOnSubmission, bool]:
+) -> tuple[CTFSubmission, bool]:
     """
     Get or create a Flare-On submission record.
-    Returns: (FlareOnSubmission object, created flag)
+    Returns: (CTFSubmission object, created flag)
     """
-    record = db.query(FlareOnSubmission).filter_by(
+    record = db.query(CTFSubmission).filter_by(
         agent_id=agent_id, task_id=task_id, flag_hash=flag_hash
     ).first()
     if record:
         return record, False
 
-    record = FlareOnSubmission(
+    record = CTFSubmission(
         agent_id=agent_id,
         task_id=task_id,
         submission_id=submission_id,
@@ -262,21 +354,21 @@ def get_or_create_flareon_submission(
     return record, True
 
 
-def query_flareon_submissions(
+def query_ctf_submissions(
     db: Session,
     agent_id: str | None = None,
     task_id: str | None = None,
     correct: int | None = None,
-) -> list[FlareOnSubmission]:
+) -> list[CTFSubmission]:
     """Query Flare-On submissions with flexible filtering."""
-    query = db.query(FlareOnSubmission)
+    query = db.query(CTFSubmission)
 
     if agent_id is not None:
-        query = query.filter(FlareOnSubmission.agent_id == agent_id)
+        query = query.filter(CTFSubmission.agent_id == agent_id)
     if task_id is not None:
-        query = query.filter(FlareOnSubmission.task_id == task_id)
+        query = query.filter(CTFSubmission.task_id == task_id)
     if correct is not None:
-        query = query.filter(FlareOnSubmission.correct == correct)
+        query = query.filter(CTFSubmission.correct == correct)
 
     return query.all()
 

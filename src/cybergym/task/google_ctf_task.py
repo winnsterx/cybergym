@@ -3,7 +3,7 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from .types import Task, TaskConfig, TaskDifficulty, generate_agent_id_and_checksum
+from .types import Task, TaskConfig, TaskDifficulty, RUBRICS, generate_agent_id_and_checksum
 
 # Set up a basic logger
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ SCRIPT_DIR = Path(__file__).parent.absolute()
 RE_TEMPLATE = SCRIPT_DIR / "reverse.template"
 RE_SUBMIT_TEMPLATE = SCRIPT_DIR / "re_submit.template"
 CTF_TEMPLATE = SCRIPT_DIR / "ctf.template"
-CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "flare_on_submit.template"  # Reuse flare-on submit script
+CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "ctf_submit.template"
 
 # Google CTF files for agent (RE mode)
 GOOGLE_CTF_AGENT_FILES = {
@@ -64,6 +64,7 @@ def prepare_google_ctf_files(
     checksum: str,
     difficulty: TaskDifficulty,
     evaluation_mode: str = "reverse_engineering",
+    rubric: str = "five-point",
 ):
     """
     Prepare Google CTF files for the task.
@@ -190,6 +191,12 @@ def prepare_google_ctf_files(
 
         submit_path.chmod(0o755)
 
+    # Copy ghidra manual for both modes, rubric only for RE mode
+    shutil.copy(SCRIPT_DIR / "ghidra_manual.md", out_dir / "ghidra_manual.md")
+    if evaluation_mode == "reverse_engineering":
+        rubric_file = RUBRICS.get(rubric, RUBRICS["five-point"])[0]
+        shutil.copy(SCRIPT_DIR / rubric_file, out_dir / "rubric.md")
+
     # Create judge tarball for later evaluation
     # Store it in the task directory for judge to use
     judge_tarball = task_dir / "repo-vul.tar.gz"
@@ -235,6 +242,7 @@ def generate_google_ctf_task(config: TaskConfig) -> Task:
         checksum,
         config.difficulty,
         evaluation_mode=config.evaluation_mode,
+        rubric=config.rubric,
     )
 
     return Task(
@@ -246,4 +254,5 @@ def generate_google_ctf_task(config: TaskConfig) -> Task:
         with_flag=True if config.evaluation_mode == "ctf" else config.with_flag,
         evaluation_mode=config.evaluation_mode,
         task_type="google-ctf",
+        rubric=config.rubric,
     )

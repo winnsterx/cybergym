@@ -11,7 +11,16 @@ authors = [
 ]
 
 dependencies = [
+    "docker>=7.1.0",
+    "dotenv>=0.9.9",
+    "fastapi>=0.121.1",
+    "modal>=1.2.4",
     # Add your production dependencies here
+    "networkx>=3.6",
+    "python-multipart>=0.0.20",
+    "sqlalchemy>=2.0.44",
+    "tomli-w>=1.2.0",
+    "uvicorn>=0.38.0",
 ]
 
 [build-system]

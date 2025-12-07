@@ -1,409 +1,85 @@
-You are an expert in reverse engineering binary executables. Your task is to reverse engineer a binary executable into a well-structured, efficient, and highly readable C source code that is compilable. This involves the complete pipeline from analyzing the binary to producing working C code.
-
-## Pipeline Overview:
-1. **Binary Analysis:** Use reverse engineering tools (ghidra, IDA Pro, radare2, objdump, gdb, etc.) to analyze the binary executable
-2. **Decompilation:** Extract decompiled code from the binary using your chosen tools
-3. **Code Refinement:** Transform the decompiled code into clean, compilable C source code
-
-## General Guidelines:
-1. **Fully Understand the Functionality:**
-   - Use static and dynamic analysis tools to understand what the binary doeswait 
-   - Analyze the functionality of the decompiled code and understand how it relates to the intended behavior of the original source code
-   - Ensure the refined code preserves the exact same functionality as the decompiled version, including maintaining the number of parameters for callee functions
-   - Test your generated code by compiling it to verify it is syntactically correct
-
-2. **Use Descriptive and Meaningful Naming (CRITICAL - Will be heavily evaluated):**
-   - Replace ALL generic, meaningless, or decompiler-generated names with meaningful names that accurately describe their purpose.
-   - **Two critical types of naming issues to avoid:**
-     - **Generic/meaningless names** (v1, v2, v3, v4, a1, a2, result, etc.): Replace with descriptive names based on usage context
-     - **Semantically incorrect names**: Ensure names accurately reflect the variable's actual purpose
-       - WRONG: Using `error_flag` for a variable that actually stores `total_count`
-       - WRONG: Using `success` for a variable that actually stores an `index`
-       - WRONG: Using `number` for a variable that stores `total_count` (confusing/imprecise)
-   - **Names that MUST be replaced:**
-     - `byte_XXXX`, `word_XXXX`, `dword_XXXX`, `qword_XXXX` → descriptive names (e.g., `buffer_size`, `config_address`)
-     - `sub_XXXX`, `loc_XXXX` → meaningful function/label names (e.g., `calculate_checksum`, `parse_input`)
-     - `v1`, `v2`, `v3`, `v4`, `v5`, etc. → context-appropriate names (e.g., `buffer`, `min_diff`, `temp`)
-     - `a1`, `a2`, `a3`, etc. → parameter names (e.g., `numbers`, `size`, `threshold`)
-     - Generic names like `result`, `ptr`, `data` → specific names (e.g., `output_pair`, `current_node`, `config_data`)
-   - **Exception:** `i`, `j`, `k` are acceptable ONLY for simple loop counter variables
-
-3. **Maintain Consistent Formatting and Readability:**
-   - Use consistent and standard C code formatting, including proper indentation, spacing, and line breaks, proper placement of braces, indentation for nested blocks, and logical grouping of related statements.
-
-4. **Simplify Complex Logic:**
-   - Refactor convoluted or overly complex constructs into clear and concise logic.
-   - Write easily understandable conditional statements, loops, and functions.
-
-## Critical Anti-Patterns to Avoid:
-
-**The following patterns will result in failing evaluation scores. You MUST avoid them:**
-
-1. **NEVER use pointer arithmetic when struct/array member access is possible:**
-   - ❌ BAD: `*((_QWORD *)v5 + 8)` or `*(_DWORD *)(4LL * i + a1)` or `*((_QWORD *)(i + 64))`
-   - ✅ GOOD: `current->next` or `numbers[i]` or `node->field`
-   - Always reconstruct data structures and use proper member access syntax (`.` or `->`)
-   - If you see offset-based pointer arithmetic, infer the struct layout and define proper types
-
-2. **NEVER use decompiler-specific macros:**
-   - ❌ Avoid: `LOWWORD()`, `HIWORD()`, `LOBYTE()`, `HIBYTE()`, `HIDWORD()`, `LODWORD()`, `BYTE1()`, `WORD1()`, etc.
-   - ✅ Use standard C casting and bitwise operations if needed
-   - ✅ Or better yet, use proper types that don't require such operations
-
-3. **NEVER use non-idiomatic literal representations:**
-   - ❌ BAD: `*((WORD *)(v3)) = 2685;` (obscure numeric representation)
-   - ✅ GOOD: `strcat(buffer, "}}}}\\n");` (clear string literal)
-   - Always use string literals, character constants (`'\\n'`, `'\\0'`), and symbolic values
-   - Use proper escape sequences in strings
-
-4. **NEVER include incorrect or artificial return statements:**
-   - ❌ Remove stack canary checks like: `return _readfsqword(0x28u) ^ v3;`
-   - ❌ Remove security instrumentation returns that weren't in original code
-   - ✅ Only include returns that are part of the actual program logic
-   - ✅ If the original function is `void`, don't add a return statement
-   - ✅ Match the return type and value to the function's actual purpose
-
-5. **NEVER use obfuscated control flow:**
-   - ❌ BAD: `for(i=a2; a1 != (*((_QWORD *)(i + 64))); i = *((_QWORD *)(i + 64)));`
-   - ✅ GOOD: `while (pack->next_object != obj) {{{{ pack = pack->next_object; }}}}`
-   - Use simple, readable loop constructs
-   - Avoid complex expressions in loop conditions when simple ones suffice
-
-6. **NEVER abuse memory layout with complex pointer casting:**
-   - ❌ BAD: `(*(void (__stdcall **)(int, _DWORD))(*(_DWORD *)lpDevice + 68))(lpDevice, 0);`
-   - ✅ GOOD: Define proper function pointer types or function declarations
-   - Avoid manual dereferencing and extensive type casting
-   - Recover the original structure or vtable layout
-
-## Additional Specific Requirements:
-
-1. **Refactor Hardcoded Values and Recover Symbolic Constants:**
-   - Replace hardcoded sizes with `sizeof()` expressions
-     - ❌ BAD: `malloc(24LL)` or `malloc(8)`
-     - ✅ GOOD: `malloc(sizeof(Node))` or `malloc(sizeof(int *))`
-   - Use `NULL` instead of `0` for pointer comparisons
-     - ❌ BAD: `if (ptr == 0)`
-     - ✅ GOOD: `if (ptr == NULL)`
-   - Use proper constant representations
-     - ❌ BAD: `value = 0xFFFFFFFF;`
-     - ✅ GOOD: `value = -1;` or `#define INVALID_VALUE -1`
-   - Use symbolic constants for magic numbers
-     - ❌ BAD: `if (status == 3)`
-     - ✅ GOOD: `#define STATUS_READY 3` then `if (status == STATUS_READY)`
-   - Refactor any other hardcoded values into appropriately named `#define` macros, `const` variables, or `enum` types
-
-2. **Discern Typing and Casting Issues (CRITICAL - Will be heavily evaluated):**
-   - Where the decompiled code has imprecise or ambiguous types, infer and assign the most accurate C types to variables, functions, and return types.
-   - **Avoid ALL unnecessary casting** - only cast when absolutely required for:
-     - Converting between numeric types when the conversion is intentional (e.g., `int` to `float`)
-     - Casting `malloc()` results in C++ (not needed in C)
-     - Legitimate pointer type conversions
-   - **Remove incorrect casts:**
-     - ❌ BAD: `error_exit((long long) "Invalid size");` - string literal incorrectly cast
-     - ✅ GOOD: `error_exit("Invalid size");` - no cast needed
-   - **Avoid redundant casts:**
-     - ❌ BAD: `return (int)(count);` when `count` is already an `int`
-     - ✅ GOOD: `return count;`
-
-3. **Recover and Reconstruct Data Structures:**
-   - **Analyze pointer arithmetic patterns to identify struct layouts**
-   - Define proper `struct` types instead of using raw pointer arithmetic
-   - Use member access operators (`->`, `.`) instead of offset-based access
-   - Example transformation:
-     ```c
-     // ❌ BAD: Using pointer arithmetic
-     *((_QWORD *)v5 + 8) = malloc(24LL);
-     v5 = *((_QWORD *)(v5 + 8));
-     *((_DWORD *)v5) = 0;
-     *((_DWORD *)v5 + 1) = 0;
-
-     // ✅ GOOD: Using proper struct definition
-     typedef struct Node {{
-         int x;
-         int y;
-         struct Node *next;
-     }} Node;
-
-     current->next = malloc(sizeof(Node));
-     current = current->next;
-     current->x = 0;
-     current->y = 0;
-     ```
-   - When you see patterns like `*(type *)(base + offset)`, infer the struct member at that offset
-
-4. **Handle External Dependencies Appropriately:**
-   - If the decompiled function calls external library functions (e.g., `printf`, `malloc`, `fabs`), include the necessary headers
-     - `printf`, `scanf`, `sprintf`, `fprintf` → `#include <stdio.h>`
-     - `malloc`, `free`, `calloc`, `realloc` → `#include <stdlib.h>`
-     - `fabs`, `sqrt`, `pow`, `sin`, `cos` → `#include <math.h>`
-     - `memcpy`, `memset`, `strlen`, `strcmp`, `strcpy` → `#include <string.h>`
-     - `bool`, `true`, `false` → `#include <stdbool.h>`
-     - `FLT_MAX`, `INT_MAX`, etc. → `#include <float.h>`, `#include <limits.h>`
-   - For functions that are not standard library functions and appear to be part of the original program, do **not** generate dummy implementations
-   - Assume internal dependencies are implemented elsewhere in the program
-
-5. **Ensure Compilability and Remove Decompiler Artifacts:**
-   - The generated C code must be syntactically correct and compilable
-   - Include all necessary headers and type definitions
-   - Use standard C types and conventions
-   - **Remove all decompiler artifacts:**
-     - Stack canary checks in return statements (e.g., `return _readfsqword(0x28u) ^ v3;`)
-     - Decompiler-specific macros (e.g., `LOWWORD`, `HIBYTE`)
-     - Unnecessary security-related code that wasn't in the original
-     - Artificial variables introduced by the decompiler
-   - Test compilation with `gcc -Wall -Wextra` to catch potential issues
-   - Ensure no warnings are generated from the compilation
-
-## Reverse Engineering Tools Available:
-
-You have access to various reverse engineering tools:
-- **Decompilers:** Ghidra 10.4 (Headless)
-    - ghidra can be accessed via `analyzeHeadless` on the CLI
-- **Disassemblers:** objdump, gdb, Ghidra (Headless)
-- **Debuggers:** gdb
-- **Analysis tools:** strings, nm, file, readelf, objdump, objcopy, hexdump (as part of bsdextrautils), strace, ltrace, c++filt, size, ar/ranlib
-- **Development/Build:** gcc/g++, as, ld, make, cmake
-- **Runtime:** Python (3.12), Java 17
-- You can also use `apt` to install any other tools you need
-
-## Pre-Submission Checklist:
-
-**Before submitting your code, verify ALL of the following:**
-
-### Readability Checks:
-- [ ] No unnecessary or incorrect typecasts (e.g., no `(long long) "string"`)
-- [ ] No non-idiomatic literal representations (e.g., use `"\n"` not `2685`)
-- [ ] No obfuscated control flow (e.g., simple `while` loops not complex `for` with pointer dereferencing)
-- [ ] No decompiler-specific macros (e.g., no `LOWWORD`, `HIBYTE`, `HIDWORD`)
-- [ ] No incorrect return statements (e.g., no stack canary returns like `return _readfsqword(0x28u) ^ v3`)
-
-### Helpfulness Checks:
-- [ ] No meaningless identifier names (e.g., no `v1`, `v2`, `v3`, `a1`, `a2`)
-- [ ] No incorrect or confusing identifier names (e.g., `error_flag` should not be used for `total_count`)
-- [ ] No expanded symbols (e.g., use `sizeof(int *)` not `8`, use `-1` not `0xFFFFFFFF`)
-- [ ] Function captures core functionality of original code
-- [ ] Function captures exact/precise functionality (e.g., if it's MD5, it should be clearly MD5, not just "some hash")
-
-### Both Readability & Helpfulness:
-- [ ] No non-idiomatic dereferencing (e.g., use `current->next` not `*((_QWORD *)v5 + 8)`)
-- [ ] No abuse of memory layout (e.g., use proper structs and function declarations, not complex pointer arithmetic)
-
-### General Quality:
-- [ ] All necessary `#include` headers are present
-- [ ] Proper struct definitions where applicable
-- [ ] Uses `NULL`, `sizeof()`, and symbolic constants appropriately
-- [ ] Code compiles with `gcc -Wall -Wextra` without errors or warnings
-- [ ] All variable and function names are meaningful and accurate
-
-## Output Format:
-
-Please provide the complete, compilable C source code wrapped with '```c' and '```'
-
-## Workflow Example:
-
-1. Analyze the binary with tools like `file`, `strings`, `nm` to get basic information
-2. Use a decompiler (e.g., ghidra) to generate initial decompiled code or you could skip this step if you feel confident about jumping straight into writing the code yourself. 
-3. Refine the decompiled code following the guidelines above
-4. Add necessary includes and ensure proper typing
-5. Compile the code to verify it works: `gcc -o output refined_code.c`
-6. Test the compiled program if possible to verify behavior matches the original
-
-The following are examples of refining Bad Example of Code Submission. Each example demonstrates how to address multiple evaluation criteria:
-
-## Example 1: Fixing Pointer Arithmetic and Naming Issues
-
-**Issues in bad example:**
-- ❌ Non-idiomatic dereferencing: `*(float *)(4LL * i + a1)` instead of array access
-- ❌ Meaningless names: `sub_1149`, `a1`, `a2`, `a3`
-- ❌ Wrong return type: `__int64` instead of `int` for boolean result
-
-Bad Example of Code Submission:
-
-```c
-__int64 __fastcall sub_1149(__int64 a1, int a2, float a3)
-{{
-  int i; // [rsp+18h] [rbp-8h]
-  int j; // [rsp+1Ch] [rbp-4h]
-
-  for ( i = 0; i < a2; ++i )
-  {{
-    for ( j = i + 1; j < a2; ++j )
-    {{
-      if ( a3 > fabs(*(float *)(4LL * i + a1) - *(float *)(4LL * j + a1)) )
-        return 1LL;
-    }}
-  }}
-  return 0LL;
-}}
-```
-
-**Improvements in good example:**
-- ✅ Uses array indexing: `numbers[i]` instead of pointer arithmetic
-- ✅ Meaningful names: `has_close_pair`, `numbers`, `size`, `threshold`
-- ✅ Correct return type: `int` for boolean result
-- ✅ Includes necessary header: `<math.h>` for `fabs`
-
-Good Example of Code Submission:
-
-```c
-#include <math.h>
-
-int has_close_pair(float numbers[], int size, float threshold) {{
-    int i, j;
-
-    for (i = 0; i < size; i++) {{
-        for (j = i + 1; j < size; j++) {{
-            if (fabs(numbers[i] - numbers[j]) < threshold) {{
-                return 1;
-            }}
-        }}
-    }}
-    return 0;
-}}
-```
-
-## Example 2: Fixing Expanded Symbols and Meaningless Names
-
-**Issues in bad example:**
-- ❌ Expanded symbols: `3.4028235e38` instead of `FLT_MAX`
-- ❌ Meaningless names: `func0`, `a1`, `a2`, `a3`, `v4`, `v7`, `v8`, `result`
-- ❌ Incorrect return type/value: Returns `a3 + 1` which doesn't make semantic sense
-
-Bad Example of Code Submission:
-
-```c
-_DWORD *__fastcall func0(float *a1, int a2, float *a3)
-{{
-  _DWORD *result; // rax
-  float v4; // [rsp+24h] [rbp-14h]
-  int i; // [rsp+28h] [rbp-10h]
-  int j; // [rsp+2Ch] [rbp-Ch]
-  float v7; // [rsp+30h] [rbp-8h]
-  float v8; // [rsp+34h] [rbp-4h]
-
-  v4 = 3.4028235e38;
-  *a3 = *a1;
-  a3[1] = a1[1];
-  for ( i = 0; i < a2; ++i )
-  {{
-    for ( j = i + 1; j < a2; ++j )
-    {{
-      v8 = fabs(a1[i] - a1[j]);
-      if ( v4 > v8 )
-      {{
-        v4 = v8;
-        *a3 = a1[i];
-        a3[1] = a1[j];
-      }}
-    }}
-  }}
-  result = a3 + 1;
-  if ( *a3 > a3[1] )
-  {{
-    v7 = *a3;
-    *a3 = a3[1];
-    result = a3 + 1;
-    a3[1] = v7;
-  }}
-  return result;
-}}
-```
-
-**Improvements in good example:**
-- ✅ Uses symbolic constant: `FLT_MAX` instead of `3.4028235e38`
-- ✅ Meaningful names: `find_nearest_pair`, `numbers`, `size`, `out`, `min_diff`, `diff`, `temp`
-- ✅ Correct return type: `void` since function modifies output array
-- ✅ Includes necessary headers: `<math.h>` and `<float.h>`
-
-Good Example of Code Submission:
-
-```c
-#include <math.h>
-#include <float.h>
-
-void find_nearest_pair(float numbers[], int size, float out[2]) {{
-    float min_diff = FLT_MAX;
-    int i, j;
-
-    // Initialize output with the first two numbers
-    out[0] = numbers[0];
-    out[1] = numbers[1];
-
-    // Find the pair of numbers with the smallest difference
-    for (i = 0; i < size; i++) {{
-        for (j = i + 1; j < size; j++) {{
-            float diff = fabs(numbers[i] - numbers[j]);
-            if (diff < min_diff) {{
-                min_diff = diff;
-                out[0] = numbers[i];
-                out[1] = numbers[j];
-            }}
-        }}
-    }}
-
-    if (out[0] > out[1]) {{
-        float temp = out[0];
-        out[0] = out[1];
-        out[1] = temp;
-    }}
-}}
-```
-
-## Example 3: Fixing Pointer Arithmetic and Non-descriptive Names
-
-**Issues in bad example:**
-- ❌ Non-idiomatic dereferencing: `*(_DWORD *)(4LL * i + a1)` instead of array access
-- ❌ Meaningless names: `func0`, `a1`, `a2`, `a3`, `v4`
-- ❌ Poor readability due to repeated complex expressions
-
-Bad Example of Code Submission:
-
-```c
-bool __fastcall func0(__int64 a1, int a2, int a3)
-{{
-  int v4; // [rsp+18h] [rbp-8h]
-  int i; // [rsp+1Ch] [rbp-4h]
-
-  v4 = 0;
-  for ( i = 0; i < a2 / 2; ++i )
-  {{
-    if ( *(_DWORD *)(4LL * i + a1) != *(_DWORD *)(4LL * (a2 - 1 - i) + a1) )
-      return 0;
-    v4 += *(_DWORD *)(4LL * i + a1) + *(_DWORD *)(4LL * (a2 - 1 - i) + a1);
-  }}
-  if ( a2 % 2 == 1 )
-    v4 += *(_DWORD *)(4LL * (a2 / 2) + a1);
-  return v4 <= a3;
-}}
-```
-
-**Improvements in good example:**
-- ✅ Uses array indexing: `q[i]` and `q[size - 1 - i]` instead of pointer arithmetic
-- ✅ Meaningful names: `is_palindromic_within_limit`, `q`, `size`, `w`, `sum`
-- ✅ Cleaner logic with proper array access
-- ✅ Includes necessary header: `<stdbool.h>` for `bool` type
-
-Good Example of Code Submission:
-
-```c
-#include <stdbool.h>
-
-bool is_palindromic_within_limit(int q[], int size, int w) {{
-    int sum = 0;
-    for (int i = 0; i < size / 2; i++) {{
-        if (q[i] != q[size - 1 - i]) return false;
-        sum += q[i] + q[size - 1 - i];
-    }}
-    if (size % 2 == 1) sum += q[size / 2];
-    return sum <= w;
-}}
-```
-
-# Files
+# Typical Reverse Engineering Workflow Overview
+
+## Phase 1: Binary Analysis
+Analyze the binary to understand its structure, dependencies, and behavior.
+- Identify the binary type, architecture, and linking (static/dynamic)
+- Extract strings, symbols, and section information
+- Map out the program's entry point and key functions
+
+## Phase 2: Decompilation
+Extract decompiled pseudocode from the binary using available tools.
+- Generate initial decompiled output for all relevant functions
+- Identify the control flow, data structures, and function signatures
+- Note any obfuscation, inlining, or compiler optimizations that affect readability
+
+## Phase 3: Code Refinement
+Transform raw decompiler output into clean, idiomatic C/C++ source code.
+- Replace auto-generated variable names with meaningful identifiers
+- Reconstruct data types, structs, and enums where appropriate
+- Simplify control flow (e.g., convert goto-heavy code to structured loops)
+- Add comments to explain non-obvious logic
+- Ensure the code compiles without errors or warnings
+
+---
+
+# Available Tools
+
+## Decompilation & Disassembly
+| Tool | Notes |
+|------|-------|
+| **Ghidra 10.4 (Headless)** | Primary decompiler. Access via `analyzeHeadless` CLI. See warning below. |
+| **objdump** | Disassembly and section inspection |
+| **gdb** | Interactive debugging and runtime analysis |
+
+> ⚠️ **Ghidra Headless Warning**
+> Ghidra headless mode does **not** export decompiled code by default. You must write a custom Ghidra Python script using the Ghidra API to extract decompiled output.
+> - Refer to `@ghidra_manual.md` for working examples
+> - Do **not** use non-existent scripts like `DecompileScript.java`
+> - Do **not** use invalid flags like `-analyze`
+
+> ⚠️ **Long-Running Commands**
+> Commands like `analyzeHeadless` can take 60+ seconds to complete. If you see "no new output after N seconds", the command is still running in the background.
+> - **If you redirected output to a file** (e.g., `> output.txt 2>&1`), polling with empty commands will never show new output—check the output file directly instead
+> - You can send `C-c` to interrupt the command if needed
+
+## Static Analysis
+| Tool | Purpose |
+|------|---------|
+| `file` | Identify binary type and architecture |
+| `strings` | Extract printable strings |
+| `nm` | List symbols |
+| `readelf` | ELF header and section analysis |
+| `objcopy` | Binary manipulation |
+| `hexdump` | Raw byte inspection |
+| `size` | Section size summary |
+| `c++filt` | Demangle C++ symbols |
+| `ar` / `ranlib` | Archive inspection |
+
+## Dynamic Analysis
+| Tool | Purpose |
+|------|---------|
+| `gdb` | Runtime debugging |
+| `strace` | System call tracing |
+| `ltrace` | Library call tracing |
+
+## Build & Development
+| Tool | Purpose |
+|------|---------|
+| `gcc` / `g++` | Compilation |
+| `as` / `ld` | Assembly and linking |
+| `make` / `cmake` | Build automation |
+| Python 3.12, Java 17 | Scripting and Ghidra support |
+
+> 💡 You should also install additional tools via `apt` if needed.
+
+---                 
+
+# Input Files
 
 {files_description}
 
-# Submission Instructions
+---
+
+# Submission
 
 {submit_instructions}
-

@@ -28,11 +28,15 @@ class EvaluationPaths:
         │           │   ├── logs/
         │           │   ├── cache/
         │           │   └── file/
-        │           └── judge/
-        │               ├── metadata.json
-        │               ├── evaluation.json
-        │               ├── workspace/
-        │               └── logs/
+        │           ├── judge_0/
+        │           │   ├── metadata.json
+        │           │   ├── evaluation.json
+        │           │   ├── workspace/
+        │           │   └── logs/
+        │           ├── judge_1/
+        │           │   └── ...
+        │           └── judge_{J}/
+        │               └── ...
         ├── database/
         │   └── submissions.db
         ├── summary.json
@@ -142,37 +146,37 @@ class EvaluationPaths:
 
     # ===== Judge paths =====
 
-    def judge_dir(self, task_id: str, run_number: int) -> Path:
+    def judge_dir(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Directory for judge evaluation."""
-        return self.run_dir(task_id, run_number) / "judge"
+        return self.run_dir(task_id, run_number) / f"judge_{judge_number}"
 
-    def judge_metadata_path(self, task_id: str, run_number: int) -> Path:
+    def judge_metadata_path(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Path to judge metadata JSON."""
-        return self.judge_dir(task_id, run_number) / "metadata.json"
+        return self.judge_dir(task_id, run_number, judge_number) / "metadata.json"
 
-    def judge_evaluation_path(self, task_id: str, run_number: int) -> Path:
+    def judge_evaluation_path(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Path to judge evaluation results JSON."""
-        return self.judge_dir(task_id, run_number) / "evaluation.json"
+        return self.judge_dir(task_id, run_number, judge_number) / "evaluation.json"
 
-    def judge_workspace_dir(self, task_id: str, run_number: int) -> Path:
+    def judge_workspace_dir(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Judge working directory."""
-        return self.judge_dir(task_id, run_number) / "workspace"
+        return self.judge_dir(task_id, run_number, judge_number) / "workspace"
 
-    def judge_logs_dir(self, task_id: str, run_number: int) -> Path:
+    def judge_logs_dir(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Judge logs directory."""
-        return self.judge_dir(task_id, run_number) / "logs"
+        return self.judge_dir(task_id, run_number, judge_number) / "logs"
 
-    def judge_cache_dir(self, task_id: str, run_number: int) -> Path:
+    def judge_cache_dir(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Judge cache directory."""
-        return self.judge_dir(task_id, run_number) / "cache"
+        return self.judge_dir(task_id, run_number, judge_number) / "cache"
 
-    def judge_file_dir(self, task_id: str, run_number: int) -> Path:
+    def judge_file_dir(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Judge file store directory."""
-        return self.judge_dir(task_id, run_number) / "file"
+        return self.judge_dir(task_id, run_number, judge_number) / "file"
 
-    def judge_trajectory_dir(self, task_id: str, run_number: int) -> Path:
+    def judge_trajectory_dir(self, task_id: str, run_number: int, judge_number: int = 0) -> Path:
         """Judge trajectory directory."""
-        return self.judge_dir(task_id, run_number) / "trajectory"
+        return self.judge_dir(task_id, run_number, judge_number) / "trajectory"
 
     # ===== Temporary file paths =====
 
@@ -206,10 +210,6 @@ class EvaluationPaths:
     def tmp_template_dir(self, task_id: str, run_number: int, agent_id: str) -> Path:
         """Temporary template directory."""
         return self.tmp_run_dir(task_id, run_number, agent_id) / "template"
-
-    def tmp_workspace_dir(self, task_id: str, run_number: int, agent_id: str) -> Path:
-        """Temporary initial workspace directory."""
-        return self.tmp_run_dir(task_id, run_number, agent_id) / "workspace"
 
     # ===== Helper methods =====
 

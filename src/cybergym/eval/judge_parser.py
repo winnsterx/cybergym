@@ -27,7 +27,7 @@ def parse_judge_evaluation(evaluation_json: Dict, schema_name: str = "five-point
 
     Returns:
         Tuple of (scores_dict, detailed_scores_json)
-        - scores_dict: Dict mapping category names to normalized [0,1] scores
+        - scores_dict: Dict mapping category names to raw scores (not normalized)
         - detailed_scores_json: JSON string of full evaluation
     """
     schemas = _load_schemas()
@@ -40,8 +40,6 @@ def parse_judge_evaluation(evaluation_json: Dict, schema_name: str = "five-point
     scores = {}
 
     for category_name, score_range in categories.items():
-        min_score, max_score = score_range
-
         # Extract category from evaluation JSON
         category_data = evaluation_json.get(category_name, {})
 
@@ -49,21 +47,24 @@ def parse_judge_evaluation(evaluation_json: Dict, schema_name: str = "five-point
             scores[category_name] = 0.0
             continue
 
-        # Extract all criterion scores from this category
-        criterion_scores = []
-        for criterion_value in category_data.values():
-            if isinstance(criterion_value, dict) and "score" in criterion_value:
-                raw_score = criterion_value["score"]
-                # Normalize to [0, 1]
-                normalized = (raw_score - min_score) / (max_score - min_score) if max_score > min_score else 0.5
-                criterion_scores.append(normalized)
-            elif isinstance(criterion_value, (int, float)):
-                # Direct score (already normalized for simple schema)
-                normalized = (criterion_value - min_score) / (max_score - min_score) if max_score > min_score else criterion_value
-                criterion_scores.append(normalized)
-
-        # Average all criteria in this category
-        scores[category_name] = sum(criterion_scores) / len(criterion_scores) if criterion_scores else 0.0
+        # New flat format: category has direct "score" field
+        if isinstance(category_data, dict) and "score" in category_data:
+            scores[category_name] = category_data["score"]
+        # Legacy nested format: category has sub-criteria with scores
+        elif isinstance(category_data, dict):
+            criterion_scores = []
+            for criterion_value in category_data.values():
+                if isinstance(criterion_value, dict) and "score" in criterion_value:
+                    criterion_scores.append(criterion_value["score"])
+                elif isinstance(criterion_value, (int, float)):
+                    criterion_scores.append(criterion_value)
+            # Average all criteria in this category
+            scores[category_name] = sum(criterion_scores) / len(criterion_scores) if criterion_scores else 0.0
+        elif isinstance(category_data, (int, float)):
+            # Direct numeric score at category level
+            scores[category_name] = category_data
+        else:
+            scores[category_name] = 0.0
 
     return scores, json.dumps(evaluation_json)
 

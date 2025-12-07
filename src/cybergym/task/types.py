@@ -7,6 +7,16 @@ from pydantic import BaseModel
 
 DEFAULT_SALT = "CyberGym"
 
+# Rubric configurations: maps rubric name to (file_name, grading_schema)
+RUBRICS = {
+    "five-point": ("rubric.md", "five-point"),
+    "granular": ("rubric_granular.md", "granular"),
+    # Single-criterion focused rubrics
+    "typecast_issues": ("rubric_typecast_issues.md", "typecast_issues"),
+    "struct_class_recovery": ("rubric_struct_class_recovery.md", "struct_class_recovery"),
+    "function_signature_recovery": ("rubric_function_signature_recovery.md", "function_signature_recovery"),
+}
+
 
 class TaskType(StrEnum):
     ARVO = "arvo"
@@ -15,6 +25,7 @@ class TaskType(StrEnum):
     REVERSE_ENGINEERING = "reverse_engineering"
     FLARE_ON = "flare-on"
     GOOGLE_CTF = "google-ctf"
+    DEFCON_OOO = "defcon-ooo"
 
 
 class TaskDifficulty(StrEnum):
@@ -33,6 +44,7 @@ class Task(BaseModel):
     with_flag: bool = False  # whether the task is CTF-style and has a flag or not
     evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
     task_type: str | None = None  # task category (e.g., "arvo", "oss-fuzz", "reverse_engineering")
+    rubric: str = "five-point"  # rubric to use for RE evaluation (see RUBRICS)
 
 
 class TaskConfig(BaseModel):
@@ -47,6 +59,7 @@ class TaskConfig(BaseModel):
     agent_id: str | None = None
     with_flag: bool = False
     evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
+    rubric: str = "five-point"  # rubric to use: "five-point", "granular"
 
 
 def verify_task(task_id: str, agent_id: str, checksum: str, salt: str = DEFAULT_SALT) -> bool:

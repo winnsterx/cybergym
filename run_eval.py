@@ -11,23 +11,18 @@ import atexit
 import csv
 import json
 import logging
-import multiprocessing as mp
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tqdm import tqdm
-
 # Load .env file if it exists
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    # python-dotenv not installed, skip loading .env file
     pass
 
 # Add the examples/agents directory to the path to import agent runners
@@ -37,7 +32,10 @@ sys.path.insert(0, str(SCRIPT_DIR / "examples/agents/openhands"))
 from run import LLMArgs, OpenhandsArgs, TaskArgs as OpenhandsTaskArgs, run_with_configs
 
 from cybergym.eval import get_evaluation_paths, parse_judge_evaluation
-from cybergym.task.types import TaskDifficulty
+from cybergym.task.types import RUBRICS
+from cybergym.eval.metrics import collect_run_metrics
+from cybergym.eval.orchestrator import run_evaluation_pool
+from cybergym.eval.reporter import EvalConfig, EvalReporter, print_evaluation_summary
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -55,10 +53,27 @@ def read_tasks_from_csv(csv_path: Path) -> list[str]:
     return tasks
 
 
+def has_ctf_answer(task_id: str, data_dir: Path) -> bool:
+    """Check if a CTF task has an answer in its answers.csv."""
+    prefix = task_id.split(":")[0]
+    answers_file = data_dir / prefix / "answers.csv"
+    if not answers_file.exists():
+        return False
+    with open(answers_file) as f:
+        for row in csv.DictReader(f):
+            if row.get("task", "").strip().strip('"') == task_id and row.get("flag"):
+                return True
+    return False
+
+
+# ============================================================================
+# Agent and Judge Runners
+# ============================================================================
+
 def run_openhands_agent(
     task_id: str,
     run_number: int,
-    eval_paths: Any,  # EvaluationPaths
+    eval_paths: Any,
     model: str,
     data_dir: Path,
     server: str,
@@ -71,26 +86,21 @@ def run_openhands_agent(
     api_key: str | None,
     base_url: str,
     repo: Path,
+    rubric: str,
 ) -> tuple[str, int, bool, str | None, str | None]:
     """
     Run OpenHands agent for a single task run.
     Returns (task_id, run_number, success, error_message, agent_id).
-    agent_id is only populated on success for RE mode.
     """
     try:
-        # Set up API key in environment for this process
         if api_key:
             os.environ["ANTHROPIC_API_KEY"] = api_key
 
         logger.info(f"Starting task {task_id} run {run_number}")
 
-        # Set up directories using centralized path management
-        # Note: agent_id not known yet, will be created in run_with_configs
-        # We pass the agent directory, and run.py will create the full structure
         agent_dir = eval_paths.agent_dir(task_id, run_number)
         agent_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create LLM args
         llm_args = LLMArgs(
             model=model,
             api_key=api_key,
@@ -98,10 +108,9 @@ def run_openhands_agent(
             max_output_tokens=max_output_tokens,
         )
 
-        # Create OpenHands args with new path structure
         openhands_args = OpenhandsArgs(
-            log_dir=agent_dir,  # Will contain logs/, workspace/, trajectory/, etc.
-            tmp_dir=None,  # Will be set by run.py using eval_paths
+            log_dir=agent_dir,
+            tmp_dir=None,
             llm=llm_args,
             max_iter=max_iter,
             repo=repo,
@@ -110,22 +119,21 @@ def run_openhands_agent(
             timeout=timeout,
         )
 
-        # Create task args
         task_args = OpenhandsTaskArgs(
             task_id=task_id,
             data_dir=data_dir,
             server=server,
             difficulty=difficulty,
             evaluation_mode=evaluation_mode,
+            rubric=rubric,
         )
 
-        # Run the task, passing eval_paths for path management
-        agent_id = run_with_configs(openhands_args, task_args, eval_paths=eval_paths, run_number=run_number)
+        agent_id = run_with_configs(
+            openhands_args, task_args, eval_paths=eval_paths, run_number=run_number
+        )
 
         if agent_id:
-            logger.info(
-                f"✓ Task {task_id} run {run_number} completed successfully (agent_id: {agent_id})"
-            )
+            logger.info(f"✓ Task {task_id} run {run_number} completed (agent_id: {agent_id})")
             return (task_id, run_number, True, None, agent_id)
         else:
             logger.error(f"✗ Task {task_id} run {run_number} failed: validation error")
@@ -133,21 +141,17 @@ def run_openhands_agent(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"✗ Task {task_id} run {run_number} failed with exception: {error_msg}")
+        logger.error(f"✗ Task {task_id} run {run_number} failed: {error_msg}")
         return (task_id, run_number, False, error_msg, None)
-
-
-def run_agent_wrapper(args: tuple) -> tuple[str, int, bool, str | None, str | None]:
-    """Wrapper function for multiprocessing that unpacks arguments."""
-    return run_openhands_agent(*args)
 
 
 def run_judge_for_submission(
     task_id: str,
     agent_id: str,
     run_number: int,
+    judge_number: int,
     data_dir: Path,
-    eval_paths: Any,  # EvaluationPaths
+    eval_paths: Any,
     model: str,
     timeout: int,
     max_iterations: int,
@@ -155,38 +159,32 @@ def run_judge_for_submission(
     base_url: str,
     repo: Path,
     grading_schema: str,
-) -> tuple[str, str, bool, str | None]:
+    rubric: str,
+    server_url: str | None = None,
+) -> tuple[str, str, int, bool, str | None]:
     """
-    Run judge evaluation for a single submission using run.py in judge mode.
-    Returns (task_id, agent_id, success, error_message).
+    Run judge evaluation for a single submission.
+    Returns (task_id, agent_id, judge_number, success, error_message).
     """
     try:
-        logger.info(f"Starting judge evaluation for {task_id} agent {agent_id}")
+        logger.info(f"Starting judge {judge_number} for {task_id} agent {agent_id}")
 
-        # Get submission from database
-        from sqlalchemy.orm import Session
-        from cybergym.server.pocdb import RESubmission, init_engine
+        from cybergym.eval.client import get_submission_client
 
-        db_path = eval_paths.database_path
-        engine = init_engine(db_path)
-        with Session(engine) as session:
-            submission = (
-                session.query(RESubmission)
-                .filter(
-                    RESubmission.task_id == task_id,
-                    RESubmission.agent_id == agent_id,
-                    RESubmission.evaluated_at == None
-                )
-                .first()
-            )
+        # Get submission using unified client (works for both Docker and Modal)
+        client = get_submission_client(
+            server_url=server_url,
+            db_path=eval_paths.database_path if not server_url else None,
+        )
 
-            if not submission:
-                error_msg = f"No unevaluated submission found for agent {agent_id}"
-                logger.warning(f"✗ {error_msg}")
-                return (task_id, agent_id, False, error_msg)
+        submission = client.get_re_submission(task_id, agent_id)
+        if not submission:
+            error_msg = f"No submission found for agent {agent_id}"
+            logger.warning(f"✗ {error_msg}")
+            return (task_id, agent_id, judge_number, False, error_msg)
 
-            pseudocode = submission.pseudocode
-            submission_id = submission.submission_id
+        pseudocode = submission.pseudocode
+        submission_id = submission.submission_id
 
         # Get tarball path
         project, task_num = task_id.split(":")
@@ -196,13 +194,11 @@ def run_judge_for_submission(
         if not tarball_path.exists():
             error_msg = f"Tarball not found: {tarball_path}"
             logger.error(f"✗ {error_msg}")
-            return (task_id, agent_id, False, error_msg)
+            return (task_id, agent_id, judge_number, False, error_msg)
 
-        # Set up directories using centralized path management
-        judge_dir = eval_paths.judge_dir(task_id, run_number)
+        judge_dir = eval_paths.judge_dir(task_id, run_number, judge_number)
         judge_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create LLM args
         llm_args = LLMArgs(
             model=model,
             api_key=api_key,
@@ -210,10 +206,9 @@ def run_judge_for_submission(
             max_output_tokens=4096,
         )
 
-        # Create OpenHands args with new path structure
         openhands_args = OpenhandsArgs(
-            log_dir=judge_dir,  # Will contain logs/, workspace/, trajectory/, etc.
-            tmp_dir=None,  # Will be set by run.py using eval_paths
+            log_dir=judge_dir,
+            tmp_dir=None,
             llm=llm_args,
             max_iter=max_iterations,
             repo=repo,
@@ -222,16 +217,15 @@ def run_judge_for_submission(
             timeout=timeout,
         )
 
-        # Create task args for judge mode
         task_args = OpenhandsTaskArgs(
             task_id=task_id,
             data_dir=data_dir,
-            server="",  # Not needed for judge
-            difficulty="level0",  # Not needed for judge
+            server="",
+            difficulty="level0",
             evaluation_mode="judge",
+            rubric=rubric,
         )
 
-        # Run judge using run.py
         result_agent_id = run_with_configs(
             openhands_args,
             task_args,
@@ -239,376 +233,166 @@ def run_judge_for_submission(
             judge_tarball=tarball_path,
             eval_paths=eval_paths,
             run_number=run_number,
+            judge_number=judge_number,
         )
 
         if not result_agent_id:
             error_msg = "Judge validation failed"
-            logger.error(f"✗ {error_msg} for {task_id} agent {agent_id}")
-            return (task_id, agent_id, False, error_msg)
+            logger.error(f"✗ {error_msg} for {task_id} agent {agent_id} judge {judge_number}")
+            return (task_id, agent_id, judge_number, False, error_msg)
 
-        # Parse evaluation.json from judge workspace
-        evaluation_file = eval_paths.judge_evaluation_path(task_id, run_number)
-
-        # Also check in workspace subdirectory for backward compatibility
+        # Parse evaluation.json
+        evaluation_file = eval_paths.judge_evaluation_path(task_id, run_number, judge_number)
         if not evaluation_file.exists():
-            workspace_eval = eval_paths.judge_workspace_dir(task_id, run_number) / "evaluation.json"
+            workspace_eval = eval_paths.judge_workspace_dir(task_id, run_number, judge_number) / "evaluation.json"
             if workspace_eval.exists():
                 evaluation_file = workspace_eval
 
         if not evaluation_file.exists():
             error_msg = f"evaluation.json not found at {evaluation_file}"
             logger.warning(f"✗ {error_msg}")
-            return (task_id, agent_id, False, error_msg)
+            return (task_id, agent_id, judge_number, False, error_msg)
 
-        # Read and update database
         with open(evaluation_file) as f:
             scores = json.load(f)
 
-        # Parse judge evaluation using specified grading schema
         category_scores_dict, detailed_scores_json = parse_judge_evaluation(scores, grading_schema)
-        category_scores_json = json.dumps(category_scores_dict)
 
-        from cybergym.server.pocdb import now
-        with Session(engine) as session:
-            db_submission = session.query(RESubmission).filter_by(
-                submission_id=submission_id
-            ).first()
+        # Update database with judge evaluation using unified client
+        from cybergym.eval.client import SubmissionClient
 
-            if db_submission:
-                db_submission.grading_schema = grading_schema
-                db_submission.category_scores = category_scores_json
-                db_submission.detailed_scores = detailed_scores_json
-                db_submission.evaluated_at = now()
-                session.commit()
+        if server_url:
+            client = SubmissionClient(server_url=server_url)
+        else:
+            client = SubmissionClient(db_path=eval_paths.database_path)
 
-        logger.info(f"✓ Judge completed for {task_id} agent {agent_id}")
-        return (task_id, agent_id, True, None)
+        client.add_judge_evaluation(
+            submission_id=submission_id,
+            judge_number=judge_number,
+            grading_schema=grading_schema,
+            category_scores=category_scores_dict,
+            detailed_scores=detailed_scores_json,
+        )
+
+        logger.info(f"✓ Judge {judge_number} completed for {task_id} agent {agent_id}")
+        return (task_id, agent_id, judge_number, True, None)
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"✗ Judge failed for {task_id} agent {agent_id}: {error_msg}")
-        return (task_id, agent_id, False, error_msg)
+        logger.error(f"✗ Judge {judge_number} failed for {task_id} agent {agent_id}: {error_msg}")
+        return (task_id, agent_id, judge_number, False, error_msg)
 
 
-def run_judge_wrapper(args: tuple) -> tuple[str, str, bool, str | None]:
-    """Wrapper function for multiprocessing that unpacks judge arguments."""
+def _agent_wrapper(args: tuple) -> tuple[str, int, bool, str | None, str | None]:
+    """Wrapper for multiprocessing."""
+    return run_openhands_agent(*args)
+
+
+def _judge_wrapper(args: tuple) -> tuple[str, str, int, bool, str | None]:
+    """Wrapper for multiprocessing."""
     return run_judge_for_submission(*args)
 
 
-def calculate_statistics(values: list[float]) -> dict[str, float]:
-    """
-    Calculate statistics (median, min, max, mean) for a list of values.
+# ============================================================================
+# CLI Argument Parsing
+# ============================================================================
 
-    Args:
-        values: List of numeric values
-
-    Returns:
-        Dictionary with median, min, max, mean, and count
-    """
-    if not values:
-        return {
-            "median": None,
-            "min": None,
-            "max": None,
-            "mean": None,
-            "count": 0,
-        }
-
-    sorted_values = sorted(values)
-    n = len(sorted_values)
-
-    # Calculate median
-    if n % 2 == 0:
-        median = (sorted_values[n // 2 - 1] + sorted_values[n // 2]) / 2
-    else:
-        median = sorted_values[n // 2]
-
-    return {
-        "median": round(median, 3),
-        "min": round(min(values), 3),
-        "max": round(max(values), 3),
-        "mean": round(sum(values) / len(values), 3),
-        "count": n,
-    }
-
-
-def collect_run_metrics(
-    task_id: str,
-    run_number: int,
-    eval_paths: Any,
-    agent_success: bool,
-    agent_error: str | None,
-    evaluation_mode: str = "reverse_engineering",
-    grading_schema: str = "five-point",
-) -> dict:
-    """
-    Collect metrics for a single run from the evaluation.json file or database.
-
-    Args:
-        task_id: Task identifier
-        run_number: Run number
-        eval_paths: EvaluationPaths instance
-        agent_success: Whether the agent run succeeded
-        agent_error: Error message if agent failed
-        evaluation_mode: Evaluation mode (reverse_engineering, flare-on, exploit)
-
-    Returns:
-        Dictionary with run_id, status, and metrics
-    """
-    # Base result for all modes
-    result = {
-        "run_id": run_number,
-        "status": "success" if agent_success else "failed",
-    }
-
-    # For CTF mode, only track correct/incorrect
-    if evaluation_mode == "ctf":
-        if not agent_success:
-            result["error"] = agent_error
-            result["correct"] = False
-            return result
-        try:
-            from sqlalchemy.orm import Session
-            from cybergym.server.pocdb import init_engine, query_flareon_submissions
-
-            db_path = eval_paths.database_path
-            engine = init_engine(db_path)
-            with Session(engine) as session:
-                submissions = query_flareon_submissions(
-                    session,
-                    task_id=task_id,
-                    correct=1,  # Only get correct submissions
-                )
-
-                if submissions:
-                    # Agent succeeded if there's at least one correct submission
-                    result["correct"] = True
-                else:
-                    # Check if there are any submissions at all
-                    all_submissions = query_flareon_submissions(session, task_id=task_id)
-                    if all_submissions:
-                        result["correct"] = False
-                    else:
-                        result["error"] = "No submissions found"
-                        result["correct"] = False
-
-        except Exception as e:
-            logger.warning(f"Failed to query CTF submissions for {task_id} run {run_number}: {e}")
-            result["error"] = f"Failed to query submissions: {str(e)}"
-            result["correct"] = False
-
-        return result
-
-    # For RE mode, load category scores from database or evaluation file
-    if not agent_success:
-        result["error"] = agent_error
-        result["category_scores"] = {}
-        return result
-
-    # Try to get scores from database first
-    try:
-        from sqlalchemy.orm import Session
-        from cybergym.server.pocdb import init_engine, query_re_submissions
-
-        db_path = eval_paths.database_path
-        engine = init_engine(db_path)
-        with Session(engine) as session:
-            submissions = query_re_submissions(session, task_id=task_id)
-
-            if submissions:
-                submission = submissions[0]  # Get first submission for this task
-                if submission.category_scores:
-                    result["category_scores"] = json.loads(submission.category_scores)
-                    result["grading_schema"] = submission.grading_schema
-                    result["detailed_scores"] = submission.detailed_scores
-                    return result
-    except Exception as e:
-        logger.warning(f"Failed to query RE submissions for {task_id} run {run_number}: {e}")
-
-    # Fallback to reading evaluation file
-    evaluation_file = eval_paths.judge_evaluation_path(task_id, run_number)
-    if not evaluation_file.exists():
-        workspace_eval = eval_paths.judge_workspace_dir(task_id, run_number) / "evaluation.json"
-        if workspace_eval.exists():
-            evaluation_file = workspace_eval
-
-    if evaluation_file.exists():
-        try:
-            with open(evaluation_file) as f:
-                scores = json.load(f)
-
-            category_scores_dict, detailed_scores_json = parse_judge_evaluation(scores, grading_schema)
-            result["category_scores"] = category_scores_dict
-            result["grading_schema"] = grading_schema
-            result["detailed_scores"] = detailed_scores_json
-
-        except Exception as e:
-            logger.warning(f"Failed to read evaluation file for {task_id} run {run_number}: {e}")
-            result["error"] = f"Failed to read evaluation: {str(e)}"
-            result["category_scores"] = {}
-    else:
-        result["error"] = "Evaluation file not found"
-        result["category_scores"] = {}
-
-    return result
-
-
-def main():
+def parse_args():
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Run CyberGym evaluation across multiple tasks and runs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     # Required arguments
-    parser.add_argument(
-        "--task-csv",
-        type=Path,
-        required=True,
-        help="Path to CSV file containing task IDs",
-    )
-    parser.add_argument(
-        "--times-per-problem",
-        type=int,
-        required=True,
-        help="Number of times to run each problem",
-    )
-    parser.add_argument(
-        "--parallel-requests",
-        type=int,
-        required=True,
-        help="Maximum number of parallel requests / number of parallel agents",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        required=True,
-        help="Output directory for all tasks and runs",
-    )
+    parser.add_argument("--task-csv", type=Path, required=True,
+                        help="Path to CSV file containing task IDs")
+    parser.add_argument("--times-per-problem", type=int, required=True,
+                        help="Number of times to run each problem")
+    parser.add_argument("--parallel-requests", type=int, required=True,
+                        help="Maximum number of parallel requests")
+    parser.add_argument("--output-dir", type=Path, required=True,
+                        help="Output directory for all tasks and runs")
 
     # Agent configuration
-    parser.add_argument(
-        "--agent-type",
-        type=str,
-        default="openhands",
-        choices=["openhands"],  # Will extend later
-        help="Agent type to use (default: openhands)",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="claude-sonnet-4-5-20250929",
-        help="Model to use (default: claude-sonnet-4-5-20250929)",
-    )
-    parser.add_argument(
-        "--max-output-tokens",
-        type=int,
-        default=64000,
-        help="Maximum output tokens (default: 64000)",
-    )
+    parser.add_argument("--agent-type", type=str, default="openhands",
+                        choices=["openhands"], help="Agent type to use")
+    parser.add_argument("--model", type=str, default="claude-sonnet-4-5-20250929",
+                        help="Model to use")
+    parser.add_argument("--max-output-tokens", type=int, default=64000,
+                        help="Maximum output tokens")
 
     # Task configuration
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=Path("./cybergym_data/data"),
-        help="Directory containing task data (default: ./cybergym_data/data)",
-    )
-    parser.add_argument(
-        "--server",
-        type=str,
-        default="http://10.138.0.2:8666",
-        help="Server address (default: http://10.138.0.2:8666)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=1200,
-        help="Timeout in seconds (default: 1200)",
-    )
-    parser.add_argument(
-        "--max-iter",
-        type=int,
-        default=100,
-        help="Maximum iterations (default: 100)",
-    )
-    parser.add_argument(
-        "--silent",
-        action="store_true",
-        help="Suppress agent output",
-    )
-    parser.add_argument(
-        "--difficulty",
-        type=str,
-        default="level0",
-        choices=["level0", "level1", "level2", "level3"],
-        help="Difficulty level (default: level0)",
-    )
-    parser.add_argument(
-        "--evaluation-mode",
-        type=str,
-        default="reverse_engineering",
-        choices=["exploit", "reverse_engineering", "ctf"],
-        help="Evaluation mode (default: reverse_engineering)",
-    )
+    parser.add_argument("--data-dir", type=Path, default=Path("./cybergym_data/data"),
+                        help="Directory containing task data")
+    parser.add_argument("--server", type=str, default=None,
+                        help="Server address (auto-set based on runtime if not specified)")
+    parser.add_argument("--timeout", type=int, default=2700,
+                        help="Timeout in seconds (45 minutes)")
+    parser.add_argument("--max-iter", type=int, default=500,
+                        help="Maximum iterations")
+    parser.add_argument("--silent", action="store_true",
+                        help="Suppress agent output")
+    parser.add_argument("--difficulty", type=str, default="level0",
+                        choices=["level0", "level1", "level2", "level3"],
+                        help="Difficulty level")
+    parser.add_argument("--evaluation-mode", type=str, default="reverse_engineering",
+                        choices=["exploit", "reverse_engineering", "ctf"],
+                        help="Evaluation mode")
 
     # API configuration
-    parser.add_argument(
-        "--api-key",
-        type=str,
-        help="API key (defaults to ANTHROPIC_API_KEY environment variable)",
-    )
-    parser.add_argument(
-        "--base-url",
-        type=str,
-        default="",
-        help="Base URL for API (default: empty)",
-    )
-    parser.add_argument(
-        "--repo",
-        type=Path,
-        default=SCRIPT_DIR / "examples/agents/openhands/openhands-repo",
-        help="Path to OpenHands repo (default: ./examples/agents/openhands/openhands-repo)",
-    )
+    parser.add_argument("--api-key", type=str,
+                        help="API key (defaults to ANTHROPIC_API_KEY env var)")
+    parser.add_argument("--base-url", type=str, default="",
+                        help="Base URL for API")
+    parser.add_argument("--repo", type=Path,
+                        default=SCRIPT_DIR / "examples/agents/openhands/openhands-repo",
+                        help="Path to OpenHands repo")
+    parser.add_argument("--runtime", type=str, default="docker",
+                        choices=["docker", "modal"],
+                        help="Runtime: 'docker' (local) or 'modal' (cloud)")
 
     # Judge configuration
-    parser.add_argument(
-        "--judge-model",
-        type=str,
-        default="claude-sonnet-4-5-20250929",
-        help="Model to use for judging (default: claude-sonnet-4-5-20250929)",
-    )
-    parser.add_argument(
-        "--judge-timeout",
-        type=int,
-        default=1200,
-        help="Timeout for judge evaluation in seconds (default: 1200)",
-    )
-    parser.add_argument(
-        "--judge-max-iter",
-        type=int,
-        default=100,
-        help="Maximum iterations for judge (default: 100)",
-    )
-    parser.add_argument(
-        "--grading-schema",
-        type=str,
-        default="five-point",
-        help="Grading schema to use for evaluation (default: five-point)",
-    )
+    parser.add_argument("--judge-model", type=str, default="claude-sonnet-4-5-20250929",
+                        help="Model to use for judging")
+    parser.add_argument("--judge-timeout", type=int, default=1800,
+                        help="Timeout for judge evaluation in seconds (30 minutes)")
+    parser.add_argument("--judge-max-iter", type=int, default=500,
+                        help="Maximum iterations for judge")
+    parser.add_argument("--rubric", type=str, default="five-point",
+                        choices=list(RUBRICS.keys()),
+                        help="Rubric to use for evaluation (five-point, granular)")
+    parser.add_argument("--num-of-judges", type=int, default=1,
+                        help="Number of judge evaluations per submission")
 
-    # Debug/development options
-    parser.add_argument(
-        "--keep-tmp",
-        action="store_true",
-        help="Keep temporary files for debugging (default: remove after completion)",
-    )
-    parser.add_argument(
-        "--server-db-path",
-        type=Path,
-        help="Path to server database (default: ./server_poc/poc.db)",
-    )
+    # Debug options
+    parser.add_argument("--keep-tmp", action="store_true",
+                        help="Keep temporary files for debugging")
+    parser.add_argument("--server-db-path", type=Path,
+                        help="Path to server database")
 
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+MODAL_SERVER_URL = "https://independentsafetyresearch--cybergym-server-fastapi-app.modal.run"
+LOCAL_SERVER_URL = "http://localhost:8666"
+
+
+def main():
+    args = parse_args()
+
+    # Set default server based on runtime if not specified
+    if args.server is None:
+        if args.runtime == "modal":
+            args.server = MODAL_SERVER_URL
+            logger.info(f"Using Modal server: {args.server}")
+        else:
+            args.server = LOCAL_SERVER_URL
+            logger.info(f"Using local server: {args.server}")
 
     # Validate inputs
     if not args.task_csv.exists():
@@ -619,12 +403,15 @@ def main():
         logger.error(f"Data directory not found: {args.data_dir}")
         sys.exit(1)
 
-    # Get API key from environment if not provided
+    # Get grading schema from rubric mapping
+    grading_schema = RUBRICS[args.rubric][1]
+
     api_key = args.api_key or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        logger.warning("No API key found in arguments or ANTHROPIC_API_KEY environment variable")
+        logger.warning("No API key found in arguments or ANTHROPIC_API_KEY env var")
 
-    # Validate server database path if provided
+    os.environ["OPENHANDS_RUNTIME"] = args.runtime
+
     if args.server_db_path and not args.server_db_path.exists():
         logger.error(f"Server database not found: {args.server_db_path}")
         sys.exit(1)
@@ -635,218 +422,82 @@ def main():
         keep_tmp=args.keep_tmp,
         server_db_path=args.server_db_path
     )
-
-    # Register cleanup for tmp directory on exit
     atexit.register(eval_paths.cleanup_tmp)
 
     logger.info(f"Output directory: {eval_paths.eval_dir}")
     logger.info(f"Server database: {eval_paths.database_path}")
-    if args.keep_tmp:
-        logger.info(f"Temporary files will be kept in: {eval_paths.tmp_base}")
-    else:
-        logger.info(f"Temporary files will be auto-cleaned from: {eval_paths.tmp_base}")
 
-    # Read tasks from CSV
+    # Read tasks
     tasks = read_tasks_from_csv(args.task_csv)
     if not tasks:
         logger.error("No tasks found in CSV file!")
         sys.exit(1)
 
-    logger.info(f"Found {len(tasks)} tasks in CSV")
+    # For CTF mode, skip tasks without answers
+    if args.evaluation_mode == "ctf":
+        tasks = [t for t in tasks if has_ctf_answer(t, args.data_dir)]
+        if not tasks:
+            logger.error("No CTF tasks with answers found!")
+            sys.exit(1)
+
+    logger.info(f"Found {len(tasks)} tasks")
     logger.info(f"Will run each task {args.times_per_problem} times")
     logger.info(f"Total runs: {len(tasks) * args.times_per_problem}")
     logger.info(f"Parallel requests: {args.parallel_requests}")
 
-    # Prepare all task×run combinations
     logger.info("=" * 80)
     logger.info("Running agents")
     logger.info("=" * 80)
 
-    # Store evaluation start time
     eval_start_time = datetime.now().isoformat()
-
-    run_args_list = []
-    for task_id in tasks:
-        for run_num in range(args.times_per_problem):
-            run_args = (
-                task_id,
-                run_num,
-                eval_paths,  # Pass eval_paths instead of task_dir
-                args.model,
-                args.data_dir,
-                args.server,
-                args.timeout,
-                args.max_iter,
-                args.silent,
-                args.difficulty,
-                args.evaluation_mode,
-                args.max_output_tokens,
-                api_key,
-                args.base_url,
-                args.repo,
-            )
-            run_args_list.append(run_args)
-
-    # Execute agents and judges with unified worker pool
-    agent_results = []
-    judge_results = []
     start_time = time.time()
 
-    # For RE mode, we need to track judge tasks
+    # Prepare run arguments
+    run_args_list = [
+        (
+            task_id, run_num, eval_paths, args.model, args.data_dir,
+            args.server, args.timeout, args.max_iter, args.silent,
+            args.difficulty, args.evaluation_mode, args.max_output_tokens,
+            api_key, args.base_url, args.repo, args.rubric,
+        )
+        for task_id in tasks
+        for run_num in range(args.times_per_problem)
+    ]
+
+    # Factory function for judge args
+    def make_judge_args(task_id: str, agent_id: str, run_num: int, judge_num: int) -> tuple:
+        # Use server URL for Modal runtime to query submissions via HTTP
+        judge_server_url = args.server if args.runtime == "modal" else None
+        return (
+            task_id, agent_id, run_num, judge_num, args.data_dir,
+            eval_paths, args.judge_model, args.judge_timeout,
+            args.judge_max_iter, api_key, args.base_url, args.repo,
+            grading_schema, args.rubric,
+            judge_server_url,
+        )
+
+    # Run evaluation
     is_re_mode = args.evaluation_mode == "reverse_engineering"
+    agent_results, judge_results = run_evaluation_pool(
+        run_args_list=run_args_list,
+        agent_runner=_agent_wrapper,
+        judge_runner=_judge_wrapper,
+        parallel_requests=args.parallel_requests,
+        is_re_mode=is_re_mode,
+        num_of_judges=args.num_of_judges,
+        make_judge_args=make_judge_args,
+    )
 
-    if args.parallel_requests > 1:
-        logger.info(f"Using multiprocessing with {args.parallel_requests} workers")
-
-        with mp.Pool(args.parallel_requests) as pool:
-            # Submit all agent tasks
-            agent_futures = {}
-            for run_args in run_args_list:
-                future = pool.apply_async(run_agent_wrapper, (run_args,))
-                agent_futures[future] = run_args
-
-            # Track progress and queue judges as agents complete
-            judge_futures = {}
-            completed_agents = 0
-            total_agents = len(run_args_list)
-
-            with tqdm(total=total_agents, desc="Running agents") as pbar:
-                # Poll for completed agents
-                while completed_agents < total_agents:
-                    for future in list(agent_futures.keys()):
-                        if future.ready():
-                            try:
-                                result = future.get()
-                                task_id, run_num, success, error, agent_id = result
-                                agent_results.append(result)
-                                completed_agents += 1
-                                pbar.update(1)
-
-                                # Queue judge if RE mode and agent succeeded
-                                if is_re_mode and success and agent_id:
-                                    judge_args = (
-                                        task_id,
-                                        agent_id,
-                                        run_num,
-                                        args.data_dir,
-                                        eval_paths,
-                                        args.judge_model,
-                                        args.judge_timeout,
-                                        args.judge_max_iter,
-                                        api_key,
-                                        args.base_url,
-                                        args.repo,
-                                        args.grading_schema,
-                                    )
-                                    judge_future = pool.apply_async(run_judge_wrapper, (judge_args,))
-                                    judge_futures[judge_future] = (task_id, agent_id)
-                                    logger.info(f"Queued judge for {task_id} agent {agent_id}")
-
-                            except Exception as e:
-                                logger.error(f"Error getting agent result: {e}")
-                                completed_agents += 1
-                                pbar.update(1)
-
-                            del agent_futures[future]
-
-                    time.sleep(0.1)  # Small delay to avoid busy-waiting
-
-            # Wait for all judges to complete
-            if judge_futures:
-                logger.info(f"\nWaiting for {len(judge_futures)} judge evaluations to complete...")
-                with tqdm(total=len(judge_futures), desc="Running judges") as pbar:
-                    completed_judges = 0
-                    total_judges = len(judge_futures)
-
-                    while completed_judges < total_judges:
-                        for future in list(judge_futures.keys()):
-                            if future.ready():
-                                try:
-                                    result = future.get()
-                                    judge_results.append(result)
-                                    completed_judges += 1
-                                    pbar.update(1)
-                                except Exception as e:
-                                    logger.error(f"Error getting judge result: {e}")
-                                    completed_judges += 1
-                                    pbar.update(1)
-
-                                del judge_futures[future]
-
-                        time.sleep(0.1)
-    else:
-        logger.info("Running agents sequentially")
-        for run_args in tqdm(run_args_list, desc="Running agents"):
-            result = run_openhands_agent(*run_args)
-            task_id, run_num, success, error, agent_id = result
-            agent_results.append(result)
-
-            # Run judge immediately after agent in sequential mode
-            if is_re_mode and success and agent_id:
-                judge_args = (
-                    task_id,
-                    agent_id,
-                    run_num,
-                    args.data_dir,
-                    eval_paths,
-                    args.judge_model,
-                    args.judge_timeout,
-                    args.judge_max_iter,
-                    api_key,
-                    args.base_url,
-                    args.repo,
-                    args.grading_schema,
-                )
-                judge_result = run_judge_for_submission(*judge_args)
-                judge_results.append(judge_result)
-
-    # Print summary
     elapsed_time = time.time() - start_time
-    successful = sum(1 for _, _, success, _, _ in agent_results if success)
-    failed = len(agent_results) - successful
 
-    print("\n" + "=" * 80)
-    print("EVALUATION SUMMARY")
-    print("=" * 80)
-    print(f"Total agent runs: {len(agent_results)}")
-    print(f"Completed: {successful}")
-    print(f"Failed: {failed}")
-    print(f"Completion rate: {successful / len(agent_results) * 100:.1f}%")
-    print(f"Time elapsed: {elapsed_time:.2f}s")
-    print(f"Output directory: {eval_paths.eval_dir}")
-    print(f"Database: {eval_paths.database_path}")
+    # Collect metrics for reporting
+    # Use server URL for Modal runtime to query submissions via HTTP
+    metrics_server_url = args.server if args.runtime == "modal" else None
 
-    # Print judge summary if RE mode
-    if is_re_mode and judge_results:
-        judge_successful = sum(1 for _, _, success, _ in judge_results if success)
-        judge_failed = len(judge_results) - judge_successful
-        print(f"\nJudge Evaluations:")
-        print(f"  Total: {len(judge_results)}")
-        print(f"  Successful: {judge_successful}")
-        print(f"  Failed: {judge_failed}")
-        if judge_results:
-            print(f"  Success rate: {judge_successful / len(judge_results) * 100:.1f}%")
-
-    print("=" * 80)
-
-    # Build task results summary
-    task_results = {}
-    for task_id, run_num, success, error, agent_id in agent_results:
-        if task_id not in task_results:
-            task_results[task_id] = {"total": 0, "success": 0, "failed": 0}
-        task_results[task_id]["total"] += 1
-        if success:
-            task_results[task_id]["success"] += 1
-        else:
-            task_results[task_id]["failed"] += 1
-
-    # Collect per-run metrics for each task (needed for Flare-On solve rate)
-    task_run_metrics = {}  # task_id -> list of run metrics
+    task_run_metrics: dict[str, list[dict]] = {}
     for task_id, run_num, success, error, agent_id in agent_results:
         if task_id not in task_run_metrics:
             task_run_metrics[task_id] = []
-
-        # Collect metrics for this run
         run_metrics = collect_run_metrics(
             task_id=task_id,
             run_number=run_num,
@@ -854,194 +505,40 @@ def main():
             agent_success=success,
             agent_error=error,
             evaluation_mode=args.evaluation_mode,
-            grading_schema=args.grading_schema,
+            grading_schema=grading_schema,
+            server_url=metrics_server_url,
+            agent_id=agent_id,
         )
         task_run_metrics[task_id].append(run_metrics)
 
-    print("\nPer-task results:")
-    is_ctf_mode = args.evaluation_mode == "ctf"
-    for task_id in sorted(task_results.keys()):
-        stats = task_results[task_id]
-        if is_ctf_mode:
-            # Calculate solve rate from run metrics
-            run_results = task_run_metrics.get(task_id, [])
-            solved = sum(1 for r in run_results if r.get("correct") == True)
-            completion_rate = stats["success"] / stats["total"] * 100
-            solve_rate = solved / stats["total"] * 100
-            print(
-                f"  {task_id}: {stats['success']}/{stats['total']} completed ({completion_rate:.1f}%), "
-                f"{solved}/{stats['total']} solved ({solve_rate:.1f}%)"
-            )
-        else:
-            success_rate = stats["success"] / stats["total"] * 100
-            print(
-                f"  {task_id}: {stats['success']}/{stats['total']} successful ({success_rate:.1f}%)"
-            )
+    # Print summary to console
+    print_evaluation_summary(
+        agent_results=agent_results,
+        judge_results=judge_results,
+        task_run_metrics=task_run_metrics,
+        eval_paths=eval_paths,
+        elapsed_time=elapsed_time,
+        evaluation_mode=args.evaluation_mode,
+    )
 
-    # Print failed agent runs if any
-    if failed > 0:
-        print("\nFailed agent runs:")
-        for task_id, run_num, success, error, agent_id in agent_results:
-            if not success:
-                print(f"  ✗ {task_id} run {run_num}: {error}")
+    # Generate reports
+    config = EvalConfig(
+        model=args.model,
+        times_per_problem=args.times_per_problem,
+        parallel_requests=args.parallel_requests,
+        evaluation_mode=args.evaluation_mode,
+        difficulty=args.difficulty,
+        max_iter=args.max_iter,
+        timeout=args.timeout,
+        num_of_judges=args.num_of_judges,
+        grading_schema=grading_schema,
+    )
 
-    # Print failed judge runs if any
-    if is_re_mode and judge_results:
-        judge_failed_list = [(task_id, agent_id, error) for task_id, agent_id, success, error in judge_results if not success]
-        if judge_failed_list:
-            print("\nFailed judge evaluations:")
-            for task_id, agent_id, error in judge_failed_list:
-                print(f"  ✗ {task_id} agent {agent_id}: {error}")
-
-    # Print overall solve rate for CTF mode
-    is_ctf_mode = args.evaluation_mode == "ctf"
-    if is_ctf_mode:
-        total_solved = sum(
-            sum(1 for r in task_run_metrics.get(tid, []) if r.get("correct") == True)
-            for tid in task_results.keys()
-        )
-        solve_rate = total_solved / len(agent_results) * 100 if agent_results else 0
-        print(f"\nOverall Solve Rate: {total_solved}/{len(agent_results)} ({solve_rate:.1f}%)")
-
-    print("\n" + "=" * 80)
-
-    # Generate summary.json
-    eval_end_time = datetime.now().isoformat()
-    summary_data = {
-        "evaluation_id": args.output_dir.name,
-        "started_at": eval_start_time,
-        "completed_at": eval_end_time,
-        "config": {
-            "model": args.model,
-            "times_per_problem": args.times_per_problem,
-            "parallel_requests": args.parallel_requests,
-            "evaluation_mode": args.evaluation_mode,
-            "difficulty": args.difficulty,
-            "max_iter": args.max_iter,
-            "timeout": args.timeout,
-        },
-        "results": {
-            "total_runs": len(agent_results),
-            "successful_agent_runs": successful,
-            "failed_agent_runs": failed,
-            "agent_success_rate": successful / len(agent_results) if agent_results else 0,
-        },
-        "tasks": {}
-    }
-
-    # Add task-level statistics with per-run metrics (task_run_metrics already collected earlier)
-    is_ctf_mode = args.evaluation_mode == "ctf"
-
-    if is_ctf_mode:
-        # For CTF mode: track solve rate
-        total_solved = 0
-        for task_id in sorted(task_results.keys()):
-            stats = task_results[task_id]
-            run_results = task_run_metrics.get(task_id, [])
-
-            solved_runs = sum(1 for r in run_results if r.get("correct") == True)
-            total_solved += solved_runs
-
-            summary_data["tasks"][task_id] = {
-                "runs": stats["total"],
-                "completed": stats["success"],
-                "failed": stats["failed"],
-                "solved": solved_runs,
-                "completion_rate": stats["success"] / stats["total"] if stats["total"] > 0 else 0,
-                "solve_rate": solved_runs / stats["total"] if stats["total"] > 0 else 0,
-                "run_results": run_results,
-            }
-
-        # Overall metrics for CTF mode
-        summary_data["overall_metrics"] = {
-            "total_runs": len(agent_results),
-            "total_solved": total_solved,
-            "solve_rate": total_solved / len(agent_results) if agent_results else 0,
-        }
-    else:
-        # For RE mode: extract category scores dynamically based on grading schema
-        all_category_scores = {}  # category_name -> list of scores
-
-        for task_id in sorted(task_results.keys()):
-            stats = task_results[task_id]
-            run_results = task_run_metrics.get(task_id, [])
-
-            # Collect scores by category across all runs
-            task_category_scores = {}
-            for run_result in run_results:
-                category_scores = run_result.get("category_scores", {})
-                for category, score in category_scores.items():
-                    if category not in task_category_scores:
-                        task_category_scores[category] = []
-                    task_category_scores[category].append(score)
-
-            # Add to overall metrics
-            for category, scores in task_category_scores.items():
-                if category not in all_category_scores:
-                    all_category_scores[category] = []
-                all_category_scores[category].extend(scores)
-
-            # Compute statistics for this task
-            task_metrics = {}
-            for category, scores in task_category_scores.items():
-                task_metrics[category] = calculate_statistics(scores)
-
-            summary_data["tasks"][task_id] = {
-                "runs": stats["total"],
-                "successful": stats["success"],
-                "failed": stats["failed"],
-                "success_rate": stats["success"] / stats["total"] if stats["total"] > 0 else 0,
-                "run_results": run_results,
-                "metrics": task_metrics,
-            }
-
-        # Overall metrics for RE mode
-        overall_metrics = {}
-        for category, scores in all_category_scores.items():
-            overall_metrics[category] = calculate_statistics(scores)
-
-        summary_data["overall_metrics"] = overall_metrics
-        summary_data["grading_schema"] = args.grading_schema
-
-    # Add judge statistics if RE mode
-    if is_re_mode and judge_results:
-        judge_successful = sum(1 for _, _, success, _ in judge_results if success)
-        summary_data["results"]["successful_judge_runs"] = judge_successful
-        summary_data["results"]["failed_judge_runs"] = len(judge_results) - judge_successful
-        summary_data["results"]["judge_success_rate"] = judge_successful / len(judge_results) if judge_results else 0
-
-    # Save summary
-    with open(eval_paths.summary_path, "w") as f:
-        json.dump(summary_data, f, indent=2)
-    logger.info(f"Summary saved to: {eval_paths.summary_path}")
-
-    # Generate failed_runs.json if there are failures
-    if failed > 0 or (is_re_mode and judge_results and any(not success for _, _, success, _ in judge_results)):
-        failed_data = {
-            "failed_agent_runs": [
-                {
-                    "task_id": task_id,
-                    "run_number": run_num,
-                    "error": error
-                }
-                for task_id, run_num, success, error, agent_id in agent_results
-                if not success
-            ],
-            "failed_judge_runs": [
-                {
-                    "task_id": task_id,
-                    "agent_id": agent_id,
-                    "error": error
-                }
-                for task_id, agent_id, success, error in judge_results
-                if not success
-            ] if is_re_mode else []
-        }
-        with open(eval_paths.failed_runs_path, "w") as f:
-            json.dump(failed_data, f, indent=2)
-        logger.info(f"Failed runs saved to: {eval_paths.failed_runs_path}")
+    reporter = EvalReporter(eval_paths, config, eval_start_time)
+    reporter.generate_reports(agent_results, judge_results, task_run_metrics)
 
     # Exit with error code if any runs failed
+    failed = sum(1 for _, _, success, _, _ in agent_results if not success)
     sys.exit(0 if failed == 0 else 1)
 
 

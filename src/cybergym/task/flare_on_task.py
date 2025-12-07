@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
-FLARE_ON_README_TEMPLATE = SCRIPT_DIR / "flareon.template"
-FLARE_ON_SUBMIT_TEMPLATE = SCRIPT_DIR / "flare_on_submit.template"
+CTF_TEMPLATE = SCRIPT_DIR / "ctf.template"
+CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "ctf_submit.template"
 
 
 def extract_challenge_archive(archive_path: Path, dest_dir: Path, password: str = None) -> bool:
@@ -154,8 +154,8 @@ def prepare_flare_on_files(
     # Create README
     readme_path = out_dir / "README.md"
 
-    if FLARE_ON_README_TEMPLATE.exists():
-        with open(FLARE_ON_README_TEMPLATE) as f:
+    if CTF_TEMPLATE.exists():
+        with open(CTF_TEMPLATE) as f:
             readme_content = f.read()
     else:
         # Fallback README content
@@ -195,8 +195,8 @@ Analyze the challenge files and find the flag.
     # Create submit script
     submit_path = out_dir / "submit_flag.sh"
 
-    if FLARE_ON_SUBMIT_TEMPLATE.exists():
-        with open(FLARE_ON_SUBMIT_TEMPLATE) as f:
+    if CTF_SUBMIT_TEMPLATE.exists():
+        with open(CTF_SUBMIT_TEMPLATE) as f:
             submit_content = f.read()
     else:
         # Fallback submit script
@@ -245,6 +245,9 @@ fi
 
     # Make submit script executable
     submit_path.chmod(0o755)
+
+    # Copy ghidra manual (rubric not needed for CTF mode)
+    shutil.copy(SCRIPT_DIR / "ghidra_manual.md", out_dir / "ghidra_manual.md")
 
     logger.info(f"Flare-On workspace prepared at {out_dir}")
 

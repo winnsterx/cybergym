@@ -1,11 +1,12 @@
 {
   "five-point": {
-    "description": "5-point scale with 4 categories and 10 sub-criteria",
+    "description": "5-point scale (-2 to +2) with 5 criteria: control_flow, data_flow, data_representation, naming_quality, comments",
     "categories": {
-      "behavioral_correctness": [-2, 2],
-      "data_model_clarity": [-2, 2],
+      "control_flow": [-2, 2],
+      "data_flow": [-2, 2],
+      "data_representation": [-2, 2],
       "naming_quality": [-2, 2],
-      "readability": [-2, 2]
+      "comments": [-2, 2]
     }
   },
   "simple": {
@@ -13,6 +14,49 @@
     "categories": {
       "readability": [0, 1],
       "helpfulness": [0, 1]
+    }
+  },
+  "granular": {
+    "description": "20-criteria granular rubric with 3-point scale (0-2) for detailed decompilation quality assessment",
+    "categories": {
+      "typecast_issues": [0, 2],
+      "non_idiomatic_literal_representation": [0, 2],
+      "obfuscated_control_flow": [0, 2],
+      "use_of_decompiler_specific_macros": [0, 2],
+      "meaningless_identifier_names": [0, 2],
+      "incorrect_identifier_names": [0, 2],
+      "expanded_symbols": [0, 2],
+      "non_idiomatic_dereferencing": [0, 2],
+      "abuse_of_memory_layout": [0, 2],
+      "type_recovery_accuracy": [0, 2],
+      "enum_recognition": [0, 2],
+      "struct_class_recovery": [0, 2],
+      "array_recognition": [0, 2],
+      "dead_code_elimination": [0, 2],
+      "expression_simplification": [0, 2],
+      "boolean_expression_clarity": [0, 2],
+      "function_signature_recovery": [0, 2],
+      "calling_convention_noise": [0, 2],
+      "loop_structure_recovery": [0, 2],
+      "switch_statement_recovery": [0, 2]
+    }
+  },
+  "typecast_issues": {
+    "description": "Single-criterion rubric for typecast issues (0-2 scale)",
+    "categories": {
+      "typecast_issues": [0, 2]
+    }
+  },
+  "struct_class_recovery": {
+    "description": "Single-criterion rubric for struct/class recovery (0-2 scale)",
+    "categories": {
+      "struct_class_recovery": [0, 2]
+    }
+  },
+  "function_signature_recovery": {
+    "description": "Single-criterion rubric for function signature recovery (0-2 scale)",
+    "categories": {
+      "function_signature_recovery": [0, 2]
     }
   }
 }
