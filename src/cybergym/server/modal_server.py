@@ -143,7 +143,10 @@ def fastapi_app():
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid metadata format") from None
         payload.data = file.file.read()
-        res = submit_poc(db, payload, mode="vul", log_dir=Path(CONTAINER_LOG_DIR), salt=SALT, oss_fuzz_path=Path(CONTAINER_DATA_DIR))
+        res = submit_poc(
+            db, payload, mode="vul", log_dir=Path(CONTAINER_LOG_DIR), salt=SALT,
+            oss_fuzz_path=Path(CONTAINER_DATA_DIR), use_modal=True,
+        )
         res = _post_process_result(res, payload.require_flag)
         volume.commit()
         return res

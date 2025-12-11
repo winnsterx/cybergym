@@ -1,1 +1,2 @@
 - use `uv run` instead of `python` to run scripts in this directory
+- for notebooks, the kernel we use is @notebook_env/ so u can install deps u need via /mnt/jailbreak-defense/exp/winniex/cybergym/plots/notebook_env/bin/pip install scipygit

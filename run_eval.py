@@ -327,17 +327,17 @@ def parse_args():
                         help="Directory containing task data")
     parser.add_argument("--server", type=str, default=None,
                         help="Server address (auto-set based on runtime if not specified)")
-    parser.add_argument("--timeout", type=int, default=2700,
-                        help="Timeout in seconds (45 minutes)")
-    parser.add_argument("--max-iter", type=int, default=500,
-                        help="Maximum iterations")
+    parser.add_argument("--timeout", type=int, default=7200,
+                        help="Timeout in seconds (2 hours)")
+    parser.add_argument("--max-iter", type=int, default=10000,
+                        help="Maximum iterations (set high to avoid iteration limits)")
     parser.add_argument("--silent", action="store_true",
                         help="Suppress agent output")
     parser.add_argument("--difficulty", type=str, default="level0",
                         choices=["level0", "level1", "level2", "level3"],
                         help="Difficulty level")
     parser.add_argument("--evaluation-mode", type=str, default="reverse_engineering",
-                        choices=["exploit", "reverse_engineering", "ctf"],
+                        choices=["exploit", "exploit_binary", "reverse_engineering", "ctf"],
                         help="Evaluation mode")
 
     # API configuration
@@ -371,6 +371,12 @@ def parse_args():
     parser.add_argument("--server-db-path", type=Path,
                         help="Path to server database")
 
+    # Retry options
+    parser.add_argument("--max-run-retries", type=int, default=1,
+                        help="Maximum number of attempts per run (default: 1, no retries)")
+    parser.add_argument("--retry-delay", type=int, default=60,
+                        help="Delay in seconds between run retries (only used if max-run-retries > 1)")
+
     return parser.parse_args()
 
 
@@ -380,6 +386,9 @@ def parse_args():
 
 MODAL_SERVER_URL = "https://independentsafetyresearch--cybergym-server-fastapi-app.modal.run"
 LOCAL_SERVER_URL = "http://localhost:8666"
+# For Docker runtime, localhost refers to the container, not the host
+# Use host.docker.internal to reach host services from within containers
+DOCKER_SERVER_URL = "http://host.docker.internal:8666"
 
 
 def main():
@@ -391,8 +400,13 @@ def main():
             args.server = MODAL_SERVER_URL
             logger.info(f"Using Modal server: {args.server}")
         else:
-            args.server = LOCAL_SERVER_URL
-            logger.info(f"Using local server: {args.server}")
+            # For Docker runtime, use host.docker.internal so container can reach host
+            args.server = DOCKER_SERVER_URL
+            logger.info(f"Using Docker-accessible server: {args.server}")
+    elif args.runtime == "docker" and "localhost" in args.server:
+        # Translate localhost to host.docker.internal for Docker runtime
+        args.server = args.server.replace("localhost", "host.docker.internal")
+        logger.info(f"Translated localhost to host.docker.internal: {args.server}")
 
     # Validate inputs
     if not args.task_csv.exists():
@@ -486,6 +500,8 @@ def main():
         is_re_mode=is_re_mode,
         num_of_judges=args.num_of_judges,
         make_judge_args=make_judge_args,
+        max_run_retries=args.max_run_retries,
+        retry_delay=args.retry_delay,
     )
 
     elapsed_time = time.time() - start_time
