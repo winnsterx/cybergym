@@ -37,6 +37,19 @@ class CTFSubmissionResult:
     correct: bool
 
 
+@dataclass
+class PoCSubmissionResult:
+    """Result from querying a POC submission."""
+
+    poc_id: str
+    agent_id: str
+    task_id: str
+    poc_hash: str
+    poc_length: int
+    vul_exit_code: int | None
+    fix_exit_code: int | None
+
+
 class SubmissionClient:
     """
     Unified client for querying submissions.
@@ -340,6 +353,92 @@ class SubmissionClient:
                     task_id=s.task_id,
                     submitted_flag=s.submitted_flag,
                     correct=bool(s.correct),
+                )
+                for s in submissions
+            ]
+
+    # ===== POC Submissions (Exploit mode) =====
+
+    def get_poc_submissions(
+        self,
+        task_id: str,
+        agent_id: str,
+    ) -> list[PoCSubmissionResult]:
+        """Get POC submissions for a task/agent."""
+        if self.is_http_mode:
+            return self._get_poc_submissions_http(task_id, agent_id)
+        return self._get_poc_submissions_local(task_id, agent_id)
+
+    def _get_poc_submissions_http(
+        self,
+        task_id: str,
+        agent_id: str,
+    ) -> list[PoCSubmissionResult]:
+        """Query POC submissions via HTTP."""
+        try:
+            query_url = f"{self.server_url.rstrip('/')}/query-poc"
+            query_data = {"task_id": task_id, "agent_id": agent_id}
+
+            req = urllib.request.Request(
+                query_url,
+                data=json.dumps(query_data).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": self._get_api_key(),
+                },
+                method="POST",
+            )
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                submissions = json.loads(response.read().decode("utf-8"))
+                return [
+                    PoCSubmissionResult(
+                        poc_id=s["poc_id"],
+                        agent_id=s["agent_id"],
+                        task_id=s["task_id"],
+                        poc_hash=s.get("poc_hash", ""),
+                        poc_length=s.get("poc_length", 0),
+                        vul_exit_code=s.get("vul_exit_code"),
+                        fix_exit_code=s.get("fix_exit_code"),
+                    )
+                    for s in submissions
+                ]
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return []
+            raise
+        except Exception as e:
+            logger.error(f"Error querying POC submissions via HTTP: {e}")
+            return []
+
+    def _get_poc_submissions_local(
+        self,
+        task_id: str,
+        agent_id: str,
+    ) -> list[PoCSubmissionResult]:
+        """Query POC submissions from local database."""
+        from sqlalchemy.orm import Session
+
+        from cybergym.server.pocdb import get_poc_by_hash
+
+        engine = self._get_engine()
+        with Session(engine) as session:
+            submissions = get_poc_by_hash(
+                session,
+                task_id=task_id,
+                agent_id=agent_id,
+            )
+            if not submissions:
+                return []
+            return [
+                PoCSubmissionResult(
+                    poc_id=s.poc_id,
+                    agent_id=s.agent_id,
+                    task_id=s.task_id,
+                    poc_hash=s.poc_hash,
+                    poc_length=s.poc_length,
+                    vul_exit_code=s.vul_exit_code,
+                    fix_exit_code=s.fix_exit_code,
                 )
                 for s in submissions
             ]

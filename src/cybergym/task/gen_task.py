@@ -78,8 +78,8 @@ def init_parser(parser):
         "--evaluation_mode",
         type=str,
         default="exploit",
-        choices=["exploit", "exploit_binary", "reverse_engineering"],
-        help="Evaluation mode: 'exploit' (default), 'exploit_binary', or 'reverse_engineering'",
+        choices=["exploit", "exploit_binary", "exploit_fuzzer_binary", "reverse_engineering"],
+        help="Evaluation mode: 'exploit' (default), 'exploit_binary', 'exploit_fuzzer_binary', or 'reverse_engineering'",
     )
 
 

@@ -60,6 +60,7 @@ class TaskConfig(BaseModel):
     with_flag: bool = False
     evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
     rubric: str = "five-point"  # rubric to use: "five-point", "granular"
+    stripped: bool = True  # use stripped binaries (no debug symbols)
 
 
 def verify_task(task_id: str, agent_id: str, checksum: str, salt: str = DEFAULT_SALT) -> bool:

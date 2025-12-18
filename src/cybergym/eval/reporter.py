@@ -153,9 +153,12 @@ class EvalReporter:
         # Add mode-specific metrics
         is_ctf_mode = self.config.evaluation_mode == "ctf"
         is_re_mode = self.config.evaluation_mode == "reverse_engineering"
+        is_exploit_mode = self.config.evaluation_mode in ("exploit", "exploit_binary", "exploit_fuzzer_binary")
 
         if is_ctf_mode:
             self._add_ctf_metrics(summary_data, task_results, task_run_metrics)
+        elif is_exploit_mode:
+            self._add_exploit_metrics(summary_data, task_results, task_run_metrics)
         else:
             self._add_re_metrics(summary_data, task_results, task_run_metrics)
 
@@ -194,6 +197,52 @@ class EvalReporter:
                 "solved": task_metrics.get("solved", 0),
                 "completion_rate": stats["success"] / stats["total"] if stats["total"] > 0 else 0,
                 "solve_rate": task_metrics.get("solve_rate", 0),
+                "run_results": run_results,
+            }
+
+        summary_data["overall_metrics"] = overall_metrics
+
+    def _add_exploit_metrics(
+        self,
+        summary_data: dict,
+        task_results: dict[str, dict],
+        task_run_metrics: dict[str, list[dict]],
+    ):
+        """Add exploit/exploit_binary-specific metrics to summary.
+
+        For exploit modes, we distinguish between:
+        - completed: agent ran without errors
+        - success: agent found a valid exploit (POC triggered crash)
+        """
+        per_task_metrics, overall_metrics = aggregate_task_metrics(
+            task_run_metrics, self.config.evaluation_mode
+        )
+
+        # Update results section with exploit-specific metrics
+        summary_data["results"] = {
+            "total_runs": overall_metrics.get("total_runs", 0),
+            "completed_runs": overall_metrics.get("total_completed", 0),
+            "successful_runs": overall_metrics.get("total_successful", 0),
+            "run_success_rate": overall_metrics.get("run_success_rate", 0),
+            "successful_tasks": overall_metrics.get("successful_tasks", 0),
+            "task_success_rate": overall_metrics.get("task_success_rate", 0),
+        }
+
+        for task_id in sorted(task_results.keys()):
+            run_results = task_run_metrics.get(task_id, [])
+            task_metrics = per_task_metrics.get(task_id, {})
+
+            # Count completed and successful runs from run_results
+            completed = sum(1 for r in run_results if r.get("status") in ("completed", "success"))
+            successful = sum(1 for r in run_results if r.get("exploit_success") is True)
+
+            summary_data["tasks"][task_id] = {
+                "runs": len(run_results),
+                "completed": completed,
+                "successful": successful,
+                "success_rate": task_metrics.get("success_rate", 0),
+                "total_poc_submissions": task_metrics.get("total_poc_submissions", 0),
+                "total_successful_pocs": task_metrics.get("total_successful_pocs", 0),
                 "run_results": run_results,
             }
 
@@ -300,6 +349,17 @@ def print_evaluation_summary(
 
     is_re_mode = evaluation_mode == "reverse_engineering"
     is_ctf_mode = evaluation_mode == "ctf"
+    is_exploit_mode = evaluation_mode in ("exploit", "exploit_binary", "exploit_fuzzer_binary")
+
+    # Print exploit-specific summary
+    if is_exploit_mode:
+        exploit_success = sum(
+            1 for r in sum(task_run_metrics.values(), [])
+            if r.get("exploit_success") is True
+        )
+        print(f"\nExploit Results:")
+        print(f"  Successful exploits: {exploit_success}/{len(agent_results)}")
+        print(f"  Exploit success rate: {exploit_success / len(agent_results) * 100:.1f}%")
 
     # Print judge summary if RE mode
     if is_re_mode and judge_results:
@@ -328,6 +388,15 @@ def print_evaluation_summary(
             print(
                 f"  {task_id}: {stats['success']}/{stats['total']} completed ({completion_rate:.1f}%), "
                 f"{solved}/{stats['total']} solved ({solve_rate:.1f}%)"
+            )
+        elif is_exploit_mode:
+            run_results = task_run_metrics.get(task_id, [])
+            exploit_success = sum(1 for r in run_results if r.get("exploit_success") is True)
+            completion_rate = stats["success"] / stats["total"] * 100
+            success_rate = exploit_success / stats["total"] * 100
+            print(
+                f"  {task_id}: {stats['success']}/{stats['total']} completed ({completion_rate:.1f}%), "
+                f"{exploit_success}/{stats['total']} exploited ({success_rate:.1f}%)"
             )
         else:
             success_rate = stats["success"] / stats["total"] * 100
@@ -360,5 +429,20 @@ def print_evaluation_summary(
         )
         solve_rate = total_solved / len(agent_results) * 100 if agent_results else 0
         print(f"\nOverall Solve Rate: {total_solved}/{len(agent_results)} ({solve_rate:.1f}%)")
+
+    # Print overall exploit success rate for exploit modes
+    if is_exploit_mode:
+        total_exploited = sum(
+            sum(1 for r in task_run_metrics.get(tid, []) if r.get("exploit_success") is True)
+            for tid in task_results.keys()
+        )
+        tasks_exploited = sum(
+            1 for tid in task_results.keys()
+            if any(r.get("exploit_success") is True for r in task_run_metrics.get(tid, []))
+        )
+        exploit_rate = total_exploited / len(agent_results) * 100 if agent_results else 0
+        task_rate = tasks_exploited / len(task_results) * 100 if task_results else 0
+        print(f"\nOverall Exploit Rate: {total_exploited}/{len(agent_results)} runs ({exploit_rate:.1f}%)")
+        print(f"Tasks with at least one exploit: {tasks_exploited}/{len(task_results)} ({task_rate:.1f}%)")
 
     print("\n" + "=" * 80)

@@ -77,15 +77,13 @@ def run_arvo_compile(container_name: str, no_sanitizers: bool = False) -> bool:
     """
     if no_sanitizers:
         # Disable all sanitizers and coverage instrumentation for clean binaries
-        # This removes: -fsanitize=memory/address, -fsanitize-coverage=trace-pc-guard,trace-cmp
+        # Don't change SANITIZER (to avoid libFuzzer rebuild issues), just clear the flags
         print("  Compiling WITHOUT sanitizers (clean binaries)...")
         compile_cmd = (
             f"docker exec {container_name} bash -c '"
             "export SANITIZER_FLAGS= && "
             "export COVERAGE_FLAGS= && "
-            "export SANITIZER_FLAGS_memory= && "
-            "export SANITIZER_FLAGS_address= && "
-            "/usr/local/bin/compile"
+            "arvo compile"
             "'"
         )
     else:
@@ -122,14 +120,43 @@ def run_arvo_compile(container_name: str, no_sanitizers: bool = False) -> bool:
 
 
 def copy_file(container_name: str, src_path: str, dest_path: Path) -> bool:
-    """Copy a file from container to local path"""
+    """Copy a file from container to local path."""
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     ret, _, _ = run_cmd(f"docker cp {container_name}:{src_path} {dest_path}")
     return ret == 0 and dest_path.exists()
 
 
+def copy_file_both_versions(container_name: str, src_path: str, unstripped_path: Path, stripped_path: Path) -> tuple[bool, bool]:
+    """Copy a file from container to both unstripped and stripped destinations.
+
+    Returns:
+        (unstripped_success, stripped_success)
+    """
+    # Copy unstripped version
+    unstripped_ok = copy_file(container_name, src_path, unstripped_path)
+    if not unstripped_ok:
+        return False, False
+
+    # Copy stripped version (copy from unstripped, then strip)
+    stripped_path.parent.mkdir(parents=True, exist_ok=True)
+    ret, _, _ = run_cmd(f"cp {unstripped_path} {stripped_path}")
+    if ret != 0:
+        return True, False
+
+    # Strip the stripped copy
+    ret, _, _ = run_cmd(f"strip --strip-all {stripped_path}")
+    # Even if strip fails (e.g., thin archives), we still have the file
+    stripped_ok = stripped_path.exists()
+
+    return True, stripped_ok
+
+
 def analyze_task(task_id: str, data_dir: Path, output_dir: Path, no_sanitizers: bool = False) -> dict:
     """Analyze a single ARVO task and extract build artifacts.
+
+    Extracts both stripped and unstripped versions:
+    - output_dir/{task_id}/...  (unstripped)
+    - output_dir/stripped/{task_id}/...  (stripped)
 
     Args:
         task_id: ARVO task ID (e.g., "1065")
@@ -168,8 +195,11 @@ def analyze_task(task_id: str, data_dir: Path, output_dir: Path, no_sanitizers: 
         result['error'] = 'Failed to start container'
         return result
 
+    # Setup output directories for both stripped and unstripped versions
     task_output_dir = output_dir / task_id
     task_output_dir.mkdir(parents=True, exist_ok=True)
+    stripped_output_dir = output_dir / 'stripped' / task_id
+    stripped_output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         # Get existing .a and .o files BEFORE compile
@@ -206,22 +236,30 @@ def analyze_task(task_id: str, data_dir: Path, output_dir: Path, no_sanitizers: 
         print(f"  Found {len(created_libs)} new static libraries")
         print(f"  Found {len(created_objs)} new object files")
 
-        # Copy static libraries
+        # Copy static libraries (both stripped and unstripped)
         libs_dir = task_output_dir / 'libs'
+        stripped_libs_dir = stripped_output_dir / 'libs'
         for lib_path in sorted(created_libs):
             lib_name = Path(lib_path).name
-            local_path = libs_dir / lib_name
-            if copy_file(container_name, lib_path, local_path):
-                size_kb = local_path.stat().st_size / 1024
+            unstripped_path = libs_dir / lib_name
+            stripped_path = stripped_libs_dir / lib_name
+            unstripped_ok, stripped_ok = copy_file_both_versions(
+                container_name, lib_path, unstripped_path, stripped_path
+            )
+            if unstripped_ok:
+                size_kb = unstripped_path.stat().st_size / 1024
+                stripped_size_kb = stripped_path.stat().st_size / 1024 if stripped_ok else 0
                 result['static_libs'].append({
                     'name': lib_name,
                     'container_path': lib_path,
-                    'size_kb': round(size_kb, 1)
+                    'size_kb': round(size_kb, 1),
+                    'stripped_size_kb': round(stripped_size_kb, 1) if stripped_ok else None
                 })
-                print(f"    Copied: {lib_name} ({size_kb:.1f} KB)")
+                print(f"    Copied: {lib_name} ({size_kb:.1f} KB -> {stripped_size_kb:.1f} KB stripped)")
 
-        # Copy object files (limit to reasonable number)
+        # Copy object files (both stripped and unstripped, limit to reasonable number)
         objs_dir = task_output_dir / 'objects'
+        stripped_objs_dir = stripped_output_dir / 'objects'
         obj_count = 0
         max_objs = 200  # Limit to avoid copying too many
         for obj_path in sorted(created_objs):
@@ -229,8 +267,12 @@ def analyze_task(task_id: str, data_dir: Path, output_dir: Path, no_sanitizers: 
                 print(f"    ... and {len(created_objs) - max_objs} more object files (skipped)")
                 break
             obj_name = Path(obj_path).name
-            local_path = objs_dir / obj_name
-            if copy_file(container_name, obj_path, local_path):
+            unstripped_path = objs_dir / obj_name
+            stripped_path = stripped_objs_dir / obj_name
+            unstripped_ok, _ = copy_file_both_versions(
+                container_name, obj_path, unstripped_path, stripped_path
+            )
+            if unstripped_ok:
                 result['object_files'].append({
                     'name': obj_name,
                     'container_path': obj_path
@@ -238,19 +280,26 @@ def analyze_task(task_id: str, data_dir: Path, output_dir: Path, no_sanitizers: 
                 obj_count += 1
 
         if obj_count > 0:
-            print(f"    Copied {obj_count} object files")
+            print(f"    Copied {obj_count} object files (both stripped and unstripped)")
 
-        # Copy the fuzzer binary
+        # Copy the fuzzer binary (both stripped and unstripped)
         bin_dir = task_output_dir / 'bin'
+        stripped_bin_dir = stripped_output_dir / 'bin'
         fuzzer_path = f"/out/{fuzzer_name}"
-        local_fuzzer = bin_dir / fuzzer_name
-        if copy_file(container_name, fuzzer_path, local_fuzzer):
-            size_mb = local_fuzzer.stat().st_size / (1024 * 1024)
+        unstripped_fuzzer = bin_dir / fuzzer_name
+        stripped_fuzzer = stripped_bin_dir / fuzzer_name
+        unstripped_ok, stripped_ok = copy_file_both_versions(
+            container_name, fuzzer_path, unstripped_fuzzer, stripped_fuzzer
+        )
+        if unstripped_ok:
+            size_mb = unstripped_fuzzer.stat().st_size / (1024 * 1024)
+            stripped_size_mb = stripped_fuzzer.stat().st_size / (1024 * 1024) if stripped_ok else 0
             result['fuzzer_binary'] = {
                 'name': fuzzer_name,
-                'size_mb': round(size_mb, 1)
+                'size_mb': round(size_mb, 1),
+                'stripped_size_mb': round(stripped_size_mb, 1) if stripped_ok else None
             }
-            print(f"    Copied fuzzer: {fuzzer_name} ({size_mb:.1f} MB)")
+            print(f"    Copied fuzzer: {fuzzer_name} ({size_mb:.1f} MB -> {stripped_size_mb:.1f} MB stripped)")
 
     finally:
         print("  Stopping container...")
@@ -265,21 +314,15 @@ def main():
     )
     parser.add_argument("task_id", type=str, help="Task ID (e.g., 368)")
     parser.add_argument(
-        "--output", "-o",
-        type=Path,
-        default=Path('/mnt/jailbreak-defense/exp/winniex/cybergym/executables/deps.json'),
-        help="Output JSON file for metadata"
-    )
-    parser.add_argument(
         "--files-dir", "-d",
         type=Path,
         default=Path('/mnt/jailbreak-defense/exp/winniex/cybergym/executables/arvo'),
         help="Output directory for extracted files"
     )
     parser.add_argument(
-        "--no-sanitizers",
+        "--with-sanitizers",
         action="store_true",
-        help="Compile without sanitizers/coverage for clean binaries (smaller, no instrumentation)"
+        help="Compile with sanitizers (ASAN). Default is no sanitizers for clean binaries."
     )
     args = parser.parse_args()
 
@@ -290,13 +333,15 @@ def main():
     print("=" * 80)
     print(f"Task: {args.task_id}")
     print(f"Output directory: {args.files_dir}")
-    print(f"No sanitizers: {args.no_sanitizers}")
+    print(f"  - Unstripped: {args.files_dir}/{{task_id}}/")
+    print(f"  - Stripped:   {args.files_dir}/stripped/{{task_id}}/")
+    print(f"With sanitizers: {args.with_sanitizers}")
 
     print(f"\n{'='*60}")
     print(f"Processing Task: {args.task_id}")
     print('='*60)
 
-    result = analyze_task(args.task_id, data_dir, args.files_dir, no_sanitizers=args.no_sanitizers)
+    result = analyze_task(args.task_id, data_dir, args.files_dir, no_sanitizers=not args.with_sanitizers)
 
     # Print summary
     if result.get('error'):
@@ -311,24 +356,61 @@ def main():
             print(f"      ... and {len(result['static_libs']) - 10} more")
         print(f"    Object files: {len(result['object_files'])}")
 
-    # Update JSON output
-    all_results = {}
-    if args.output.exists():
-        with open(args.output) as f:
-            all_results = json.load(f)
+    # Update JSON output - one for unstripped, one for stripped
+    unstripped_output = args.files_dir / 'deps.json'
+    stripped_output = args.files_dir / 'stripped' / 'deps.json'
 
-    all_results[f"arvo:{args.task_id}"] = {
+    # Load existing results
+    unstripped_results = {}
+    if unstripped_output.exists():
+        with open(unstripped_output) as f:
+            unstripped_results = json.load(f)
+
+    stripped_results = {}
+    if stripped_output.exists():
+        with open(stripped_output) as f:
+            stripped_results = json.load(f)
+
+    # Build unstripped entry
+    unstripped_results[f"arvo:{args.task_id}"] = {
         'fuzzer': result['fuzzer'],
-        'static_libs': result['static_libs'],
+        'static_libs': [
+            {'name': lib['name'], 'container_path': lib['container_path'], 'size_kb': lib['size_kb']}
+            for lib in result['static_libs']
+        ],
         'object_files_count': len(result['object_files']),
-        'fuzzer_binary': result['fuzzer_binary'],
+        'fuzzer_binary': {
+            'name': result['fuzzer_binary']['name'],
+            'size_mb': result['fuzzer_binary']['size_mb']
+        } if result['fuzzer_binary'] else None,
         'error': result.get('error'),
     }
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w') as f:
-        json.dump(all_results, f, indent=2)
-    print(f"\nMetadata written to {args.output}")
+    # Build stripped entry
+    stripped_results[f"arvo:{args.task_id}"] = {
+        'fuzzer': result['fuzzer'],
+        'static_libs': [
+            {'name': lib['name'], 'container_path': lib['container_path'], 'size_kb': lib.get('stripped_size_kb')}
+            for lib in result['static_libs']
+        ],
+        'object_files_count': len(result['object_files']),
+        'fuzzer_binary': {
+            'name': result['fuzzer_binary']['name'],
+            'size_mb': result['fuzzer_binary'].get('stripped_size_mb')
+        } if result['fuzzer_binary'] else None,
+        'error': result.get('error'),
+    }
+
+    # Write both JSON files
+    unstripped_output.parent.mkdir(parents=True, exist_ok=True)
+    with open(unstripped_output, 'w') as f:
+        json.dump(unstripped_results, f, indent=2)
+    print(f"\nUnstripped metadata written to {unstripped_output}")
+
+    stripped_output.parent.mkdir(parents=True, exist_ok=True)
+    with open(stripped_output, 'w') as f:
+        json.dump(stripped_results, f, indent=2)
+    print(f"Stripped metadata written to {stripped_output}")
 
     print("\n" + "=" * 80)
     print("Done")

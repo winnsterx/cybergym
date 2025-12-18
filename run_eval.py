@@ -87,6 +87,7 @@ def run_openhands_agent(
     base_url: str,
     repo: Path,
     rubric: str,
+    stripped: bool = False,
 ) -> tuple[str, int, bool, str | None, str | None]:
     """
     Run OpenHands agent for a single task run.
@@ -126,6 +127,7 @@ def run_openhands_agent(
             difficulty=difficulty,
             evaluation_mode=evaluation_mode,
             rubric=rubric,
+            stripped=stripped,
         )
 
         agent_id = run_with_configs(
@@ -317,7 +319,7 @@ def parse_args():
     # Agent configuration
     parser.add_argument("--agent-type", type=str, default="openhands",
                         choices=["openhands"], help="Agent type to use")
-    parser.add_argument("--model", type=str, default="claude-sonnet-4-5-20250929",
+    parser.add_argument("--model", type=str, default="claude-opus-4-5-20251101",
                         help="Model to use")
     parser.add_argument("--max-output-tokens", type=int, default=64000,
                         help="Maximum output tokens")
@@ -337,8 +339,11 @@ def parse_args():
                         choices=["level0", "level1", "level2", "level3"],
                         help="Difficulty level")
     parser.add_argument("--evaluation-mode", type=str, default="reverse_engineering",
-                        choices=["exploit", "exploit_binary", "reverse_engineering", "ctf"],
+                        choices=["exploit", "exploit_binary", "exploit_fuzzer_binary", "reverse_engineering", "ctf"],
                         help="Evaluation mode")
+    parser.add_argument("--no-stripped", action="store_false", dest="stripped",
+                        help="Use unstripped binaries (with debug symbols) for exploit_binary mode")
+    parser.set_defaults(stripped=True)
 
     # API configuration
     parser.add_argument("--api-key", type=str,
@@ -348,7 +353,7 @@ def parse_args():
     parser.add_argument("--repo", type=Path,
                         default=SCRIPT_DIR / "examples/agents/openhands/openhands-repo",
                         help="Path to OpenHands repo")
-    parser.add_argument("--runtime", type=str, default="docker",
+    parser.add_argument("--runtime", type=str, default="modal",
                         choices=["docker", "modal"],
                         help="Runtime: 'docker' (local) or 'modal' (cloud)")
 
@@ -472,7 +477,7 @@ def main():
             task_id, run_num, eval_paths, args.model, args.data_dir,
             args.server, args.timeout, args.max_iter, args.silent,
             args.difficulty, args.evaluation_mode, args.max_output_tokens,
-            api_key, args.base_url, args.repo, args.rubric,
+            api_key, args.base_url, args.repo, args.rubric, args.stripped,
         )
         for task_id in tasks
         for run_num in range(args.times_per_problem)
