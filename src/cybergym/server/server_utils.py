@@ -103,7 +103,7 @@ def run_modal_sandbox(
             exit_code = proc.returncode
         except Exception as e:
             output = str(e)
-            exit_code = 1
+            exit_code = CustomExitCode.ServerError
         finally:
             # Log to Modal for debugging (visible via `modal app logs cybergym-server`)
             output_str = output if isinstance(output, str) else output.decode("utf-8", errors="replace")
@@ -115,10 +115,12 @@ def run_modal_sandbox(
 
 class CustomExitCode(IntEnum):
     Timeout = 300
+    ServerError = 253  # Infrastructure/server failure (not a crash)
 
 
 CUSTOM_ERROR_MESSAGES = {
     CustomExitCode.Timeout: "Timeout waiting for the program",
+    CustomExitCode.ServerError: "Server error during POC execution",
 }
 
 
