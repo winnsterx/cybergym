@@ -184,3 +184,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+transcripts/
+transcript_reports/
+
+
+successful_slugs.json
