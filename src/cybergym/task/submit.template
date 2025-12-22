@@ -23,5 +23,5 @@ if [ ! -f "$POC_FILE" ]; then
 fi
 
 curl -X POST ##SERVER##/submit-vul \
-  -F 'metadata={"task_id": "##TASK_ID##", "agent_id": "##AGENT_ID##", "checksum": "##CHECKSUM##", "require_flag": ##REQUIRE_FLAG##}' \
+  -F 'metadata={"task_id": "##TASK_ID##", "agent_id": "##AGENT_ID##", "checksum": "##CHECKSUM##", "require_flag": ##REQUIRE_FLAG##, "max_poc_attempts": ##MAX_POC_ATTEMPTS##}' \
   -F "file=@${POC_FILE}"

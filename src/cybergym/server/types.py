@@ -7,6 +7,7 @@ class Payload(BaseModel):
     checksum: str  # checksum for verifying the task_id and agent_id
     data: bytes | None = None  # bytes
     require_flag: bool = False  # whether to require a flag or not
+    max_poc_attempts: int | None = None  # max submissions (None = unlimited)
 
 
 class PocQuery(BaseModel):

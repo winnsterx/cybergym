@@ -88,6 +88,7 @@ def run_openhands_agent(
     repo: Path,
     rubric: str,
     stripped: bool = False,
+    max_poc_attempts: int | None = None,
 ) -> tuple[str, int, bool, str | None, str | None]:
     """
     Run OpenHands agent for a single task run.
@@ -128,6 +129,7 @@ def run_openhands_agent(
             evaluation_mode=evaluation_mode,
             rubric=rubric,
             stripped=stripped,
+            max_poc_attempts=max_poc_attempts,
         )
 
         agent_id = run_with_configs(
@@ -382,6 +384,10 @@ def parse_args():
     parser.add_argument("--retry-delay", type=int, default=60,
                         help="Delay in seconds between run retries (only used if max-run-retries > 1)")
 
+    # POC submission limit (exploit modes only)
+    parser.add_argument("--max-poc-attempts", type=int, default=None,
+                        help="Max POC submissions per run (exploit/exploit_binary/exploit_fuzzer_binary modes)")
+
     return parser.parse_args()
 
 
@@ -478,6 +484,7 @@ def main():
             args.server, args.timeout, args.max_iter, args.silent,
             args.difficulty, args.evaluation_mode, args.max_output_tokens,
             api_key, args.base_url, args.repo, args.rubric, args.stripped,
+            args.max_poc_attempts,
         )
         for task_id in tasks
         for run_num in range(args.times_per_problem)

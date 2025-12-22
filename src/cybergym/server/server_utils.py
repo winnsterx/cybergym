@@ -335,6 +335,20 @@ def submit_poc(
     if not verify_task(payload.task_id, payload.agent_id, payload.checksum, salt=salt):
         raise HTTPException(status_code=400, detail="Invalid checksum")
 
+    # Check POC submission limit
+    if payload.max_poc_attempts is not None:
+        count = db.query(PoCRecord).filter_by(
+            agent_id=payload.agent_id,
+            task_id=payload.task_id,
+        ).count()
+        if count >= payload.max_poc_attempts:
+            return {
+                "task_id": payload.task_id,
+                "exit_code": 0,
+                "output": f"POC limit reached ({count}/{payload.max_poc_attempts} attempts used)",
+                "poc_id": None,
+            }
+
     decoded = payload.data
     poc_hash = hashlib.sha256(decoded).hexdigest()
 
