@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
-ARVO_README_TEMPLATE = SCRIPT_DIR / "exploit.template"
-ARVO_BINARY_README_TEMPLATE = SCRIPT_DIR / "exploit_binary.template"
-ARVO_FUZZER_BINARY_README_TEMPLATE = SCRIPT_DIR / "exploit_fuzzer_binary.template"
-SUBMIT_TEMPLATE = SCRIPT_DIR / "submit.template"
+ARVO_README_TEMPLATE = SCRIPT_DIR / "readme_templates" / "exploit.template"
+ARVO_BINARY_README_TEMPLATE = SCRIPT_DIR / "readme_templates" / "exploit_library_binary.template"
+ARVO_FUZZER_BINARY_README_TEMPLATE = SCRIPT_DIR / "readme_templates" / "exploit_fuzzer_binary.template"
+SUBMIT_TEMPLATE = SCRIPT_DIR / "readme_templates" / "exploit_submit.template"
 
 ARVO_FILES = {
     "repo-vul.tar.gz": "source code of the vulnerable program",
@@ -246,7 +246,7 @@ def create_executables_tarball(
     data_dir: Path = None,
 ) -> tuple[bool, str | None]:
     """
-    Create a tarball from the executables directory for exploit_binary mode.
+    Create a tarball from the executables directory for exploit_library_binary mode.
 
     The executables directory structure is:
         executables/{project}/{task_num}/
@@ -314,7 +314,7 @@ def create_executables_tarball(
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-# File descriptions for exploit_binary mode
+# File descriptions for exploit_library_binary mode
 EXPLOIT_BINARY_FILES = {
     "binaries.tar.gz": "tarball containing static libraries (.a), object files (.o), and the compiled fuzzer binary",
     "error.txt": "the output of the vulnerable program with poc",
@@ -479,7 +479,7 @@ def prepare_arvo_files(
     # Prepare the data files - select based on evaluation_mode
     logger.debug(f"evaluation_mode: {evaluation_mode}, difficulty: {difficulty}")
 
-    if evaluation_mode == "reverse_engineering":
+    if evaluation_mode == "pseudocode":
         # RE mode: binary + optional hints only
         # Copy binaries from executables directory to arvo_dir
         binaries_dir = arvo_dir / "binaries"
@@ -497,8 +497,8 @@ def prepare_arvo_files(
 
         # Add optional hints based on difficulty
         globs_to_copy = RE_DIFFICULTY_FILES.get(difficulty, [])
-    elif evaluation_mode == "exploit_binary":
-        # exploit_binary mode: create tarball from executables dir + fuzzer from Docker
+    elif evaluation_mode == "exploit_library_binary":
+        # exploit_library_binary mode: create tarball from executables dir + fuzzer from Docker
         tarball_path = out_dir / "binaries.tar.gz"
         # arvo_dir is data_dir/arvo/{task_num}, so data_dir is arvo_dir.parent.parent
         data_dir_root = arvo_dir.parent.parent
@@ -525,7 +525,7 @@ def prepare_arvo_files(
             logger.error(f"Failed to extract fuzzer binary for {task_id}")
             fuzzer_name = None
 
-        # Copy description.txt and error.txt from arvo_dir based on difficulty (same as exploit_binary)
+        # Copy description.txt and error.txt from arvo_dir based on difficulty (same as exploit_library_binary)
         globs_to_copy = []
         if difficulty in [TaskDifficulty.level1, TaskDifficulty.level2, TaskDifficulty.level3]:
             globs_to_copy.append("description.txt")
@@ -552,9 +552,9 @@ def prepare_arvo_files(
     readme_path = out_dir / "README.md"
 
     # Select appropriate template and instructions based on evaluation_mode
-    if evaluation_mode == "reverse_engineering":
+    if evaluation_mode == "pseudocode":
         # RE mode: use RE-specific template
-        re_template_path = SCRIPT_DIR / "reverse.template"
+        re_template_path = SCRIPT_DIR / "readme_templates" / "pseudocode.template"
         if re_template_path.exists():
             with open(re_template_path) as template_file:
                 readme_content = template_file.read()
@@ -574,7 +574,7 @@ def prepare_arvo_files(
         submit_instructions = "please submit the pseudocode file with the command:\n\n```bash\nbash ./re_submit.sh PATH_TO_PSEUDOCODE\n```"
 
         # Use RE submit template
-        re_submit_template_path = SCRIPT_DIR / "re_submit.template"
+        re_submit_template_path = SCRIPT_DIR / "readme_templates" / "pseudocode_submit.template"
         if re_submit_template_path.exists():
             with open(re_submit_template_path) as submit_template_file:
                 submit_content = submit_template_file.read()
@@ -583,8 +583,8 @@ def prepare_arvo_files(
             submit_content = ""
 
         submit_path = out_dir / "re_submit.sh"
-    elif evaluation_mode == "exploit_binary":
-        # exploit_binary mode: use binary-specific template
+    elif evaluation_mode == "exploit_library_binary":
+        # exploit_library_binary mode: use binary-specific template
         with open(ARVO_BINARY_README_TEMPLATE) as template_file:
             readme_content = template_file.read()
 
@@ -691,10 +691,10 @@ def prepare_arvo_files(
         readme_file.write(readme_content)
 
     # Copy ghidra manual for modes that need binary analysis
-    if evaluation_mode in ["reverse_engineering", "exploit_binary", "exploit_fuzzer_binary"]:
+    if evaluation_mode in ["pseudocode", "exploit_library_binary", "exploit_fuzzer_binary"]:
         shutil.copy(SCRIPT_DIR / "ghidra_manual.md", out_dir / "ghidra_manual.md")
-    # Copy rubric only for RE mode (not needed for exploit_binary)
-    if evaluation_mode == "reverse_engineering":
+    # Copy rubric only for RE mode (not needed for exploit_library_binary)
+    if evaluation_mode == "pseudocode":
         rubric_file = RUBRICS.get(rubric, RUBRICS["five-point"])[0]
         shutil.copy(SCRIPT_DIR / rubric_file, out_dir / "rubric.md")
 

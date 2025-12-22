@@ -9,12 +9,12 @@ DEFAULT_SALT = "CyberGym"
 
 # Rubric configurations: maps rubric name to (file_name, grading_schema)
 RUBRICS = {
-    "five-point": ("rubric.md", "five-point"),
-    "granular": ("rubric_granular.md", "granular"),
+    "five-point": ("pseudocode_rubrics/rubric.md", "five-point"),
+    "granular": ("pseudocode_rubrics/rubric_granular.md", "granular"),
     # Single-criterion focused rubrics
-    "typecast_issues": ("rubric_typecast_issues.md", "typecast_issues"),
-    "struct_class_recovery": ("rubric_struct_class_recovery.md", "struct_class_recovery"),
-    "function_signature_recovery": ("rubric_function_signature_recovery.md", "function_signature_recovery"),
+    "typecast_issues": ("pseudocode_rubrics/rubric_typecast_issues.md", "typecast_issues"),
+    "struct_class_recovery": ("pseudocode_rubrics/rubric_struct_class_recovery.md", "struct_class_recovery"),
+    "function_signature_recovery": ("pseudocode_rubrics/rubric_function_signature_recovery.md", "function_signature_recovery"),
 }
 
 
@@ -22,7 +22,7 @@ class TaskType(StrEnum):
     ARVO = "arvo"
     OSS_FUZZ = "oss-fuzz"
     OSS_FUZZ_LATEST = "oss-fuzz-latest"
-    REVERSE_ENGINEERING = "reverse_engineering"
+    PSEUDOCODE = "pseudocode"
     FLARE_ON = "flare-on"
     GOOGLE_CTF = "google-ctf"
     DEFCON_OOO = "defcon-ooo"
@@ -42,8 +42,8 @@ class Task(BaseModel):
     server: str  # server address
     difficulty: TaskDifficulty
     with_flag: bool = False  # whether the task is CTF-style and has a flag or not
-    evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
-    task_type: str | None = None  # task category (e.g., "arvo", "oss-fuzz", "reverse_engineering")
+    evaluation_mode: str = "exploit"  # "exploit" or "pseudocode"
+    task_type: str | None = None  # task category (e.g., "arvo", "oss-fuzz", "pseudocode")
     rubric: str = "five-point"  # rubric to use for RE evaluation (see RUBRICS)
     max_poc_attempts: int | None = None  # max POC submissions (None = unlimited)
 
@@ -59,7 +59,7 @@ class TaskConfig(BaseModel):
     salt: str = DEFAULT_SALT
     agent_id: str | None = None
     with_flag: bool = False
-    evaluation_mode: str = "exploit"  # "exploit" or "reverse_engineering"
+    evaluation_mode: str = "exploit"  # "exploit" or "pseudocode"
     rubric: str = "five-point"  # rubric to use: "five-point", "granular"
     stripped: bool = True  # use stripped binaries (no debug symbols)
     max_poc_attempts: int | None = None  # max POC submissions (None = unlimited)

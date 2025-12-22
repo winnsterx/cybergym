@@ -152,8 +152,8 @@ class EvalReporter:
 
         # Add mode-specific metrics
         is_ctf_mode = self.config.evaluation_mode == "ctf"
-        is_re_mode = self.config.evaluation_mode == "reverse_engineering"
-        is_exploit_mode = self.config.evaluation_mode in ("exploit", "exploit_binary", "exploit_fuzzer_binary")
+        is_re_mode = self.config.evaluation_mode == "pseudocode"
+        is_exploit_mode = self.config.evaluation_mode in ("exploit", "exploit_library_binary", "exploit_fuzzer_binary")
 
         if is_ctf_mode:
             self._add_ctf_metrics(summary_data, task_results, task_run_metrics)
@@ -208,7 +208,7 @@ class EvalReporter:
         task_results: dict[str, dict],
         task_run_metrics: dict[str, list[dict]],
     ):
-        """Add exploit/exploit_binary-specific metrics to summary.
+        """Add exploit/exploit_library_binary-specific metrics to summary.
 
         For exploit modes, we distinguish between:
         - completed: agent ran without errors
@@ -256,7 +256,7 @@ class EvalReporter:
     ):
         """Add RE-specific metrics to summary."""
         per_task_metrics, overall_metrics = aggregate_task_metrics(
-            task_run_metrics, "reverse_engineering"
+            task_run_metrics, "pseudocode"
         )
 
         for task_id in sorted(task_results.keys()):
@@ -288,7 +288,7 @@ class EvalReporter:
         judge_results: list[JudgeResult],
     ):
         """Save failed_runs.json if there are failures."""
-        is_re_mode = self.config.evaluation_mode == "reverse_engineering"
+        is_re_mode = self.config.evaluation_mode == "pseudocode"
 
         failed_agents = [
             {"task_id": task_id, "run_number": run_num, "error": error}
@@ -347,9 +347,9 @@ def print_evaluation_summary(
     print(f"Output directory: {eval_paths.eval_dir}")
     print(f"Database: {eval_paths.database_path}")
 
-    is_re_mode = evaluation_mode == "reverse_engineering"
+    is_re_mode = evaluation_mode == "pseudocode"
     is_ctf_mode = evaluation_mode == "ctf"
-    is_exploit_mode = evaluation_mode in ("exploit", "exploit_binary", "exploit_fuzzer_binary")
+    is_exploit_mode = evaluation_mode in ("exploit", "exploit_library_binary", "exploit_fuzzer_binary")
 
     # Print exploit-specific summary
     if is_exploit_mode:

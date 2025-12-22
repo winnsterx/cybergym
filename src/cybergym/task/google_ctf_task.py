@@ -10,10 +10,10 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
-RE_TEMPLATE = SCRIPT_DIR / "reverse.template"
-RE_SUBMIT_TEMPLATE = SCRIPT_DIR / "re_submit.template"
-CTF_TEMPLATE = SCRIPT_DIR / "ctf.template"
-CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "ctf_submit.template"
+RE_TEMPLATE = SCRIPT_DIR / "readme_templates" / "pseudocode.template"
+RE_SUBMIT_TEMPLATE = SCRIPT_DIR / "readme_templates" / "pseudocode_submit.template"
+CTF_TEMPLATE = SCRIPT_DIR / "readme_templates" / "ctf.template"
+CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "readme_templates" / "ctf_submit.template"
 
 # Google CTF files for agent (RE mode)
 GOOGLE_CTF_AGENT_FILES = {
@@ -63,7 +63,7 @@ def prepare_google_ctf_files(
     agent_id: str,
     checksum: str,
     difficulty: TaskDifficulty,
-    evaluation_mode: str = "reverse_engineering",
+    evaluation_mode: str = "pseudocode",
     rubric: str = "five-point",
 ):
     """
@@ -84,9 +84,9 @@ def prepare_google_ctf_files(
     """
     logger.debug(f"evaluation_mode: {evaluation_mode}, difficulty: {difficulty}")
 
-    if evaluation_mode not in ["reverse_engineering", "ctf"]:
-        logger.warning(f"Google CTF tasks support reverse_engineering and ctf modes, got: {evaluation_mode}")
-        evaluation_mode = "reverse_engineering"
+    if evaluation_mode not in ["pseudocode", "ctf"]:
+        logger.warning(f"Google CTF tasks support pseudocode and ctf modes, got: {evaluation_mode}")
+        evaluation_mode = "pseudocode"
 
     # Copy attachments for agent
     attachments_src = task_dir / "attachments"
@@ -193,7 +193,7 @@ def prepare_google_ctf_files(
 
     # Copy ghidra manual for both modes, rubric only for RE mode
     shutil.copy(SCRIPT_DIR / "ghidra_manual.md", out_dir / "ghidra_manual.md")
-    if evaluation_mode == "reverse_engineering":
+    if evaluation_mode == "pseudocode":
         rubric_file = RUBRICS.get(rubric, RUBRICS["five-point"])[0]
         shutil.copy(SCRIPT_DIR / rubric_file, out_dir / "rubric.md")
 

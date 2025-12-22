@@ -340,11 +340,11 @@ def parse_args():
     parser.add_argument("--difficulty", type=str, default="level0",
                         choices=["level0", "level1", "level2", "level3"],
                         help="Difficulty level")
-    parser.add_argument("--evaluation-mode", type=str, default="reverse_engineering",
-                        choices=["exploit", "exploit_binary", "exploit_fuzzer_binary", "reverse_engineering", "ctf"],
+    parser.add_argument("--evaluation-mode", type=str, default="pseudocode",
+                        choices=["exploit", "exploit_library_binary", "exploit_fuzzer_binary", "pseudocode", "ctf"],
                         help="Evaluation mode")
     parser.add_argument("--no-stripped", action="store_false", dest="stripped",
-                        help="Use unstripped binaries (with debug symbols) for exploit_binary mode")
+                        help="Use unstripped binaries (with debug symbols) for exploit_library_binary mode")
     parser.set_defaults(stripped=True)
 
     # API configuration
@@ -386,7 +386,7 @@ def parse_args():
 
     # POC submission limit (exploit modes only)
     parser.add_argument("--max-poc-attempts", type=int, default=None,
-                        help="Max POC submissions per run (exploit/exploit_binary/exploit_fuzzer_binary modes)")
+                        help="Max POC submissions per run (exploit/exploit_library_binary/exploit_fuzzer_binary modes)")
 
     return parser.parse_args()
 
@@ -503,7 +503,7 @@ def main():
         )
 
     # Run evaluation
-    is_re_mode = args.evaluation_mode == "reverse_engineering"
+    is_re_mode = args.evaluation_mode == "pseudocode"
     agent_results, judge_results = run_evaluation_pool(
         run_args_list=run_args_list,
         agent_runner=_agent_wrapper,

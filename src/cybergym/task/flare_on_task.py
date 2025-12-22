@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
-CTF_TEMPLATE = SCRIPT_DIR / "ctf.template"
-CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "ctf_submit.template"
+CTF_TEMPLATE = SCRIPT_DIR / "readme_templates" / "ctf.template"
+CTF_SUBMIT_TEMPLATE = SCRIPT_DIR / "readme_templates" / "ctf_submit.template"
 
 
 def extract_challenge_archive(archive_path: Path, dest_dir: Path, password: str = None) -> bool:
