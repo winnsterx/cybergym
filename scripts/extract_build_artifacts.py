@@ -7,14 +7,24 @@ This script:
 2. Runs arvo compile
 3. Finds all generated .a and .o files (comparing before/after)
 4. Copies them to the output directory
+
+Usage:
+    # Single task
+    uv run scripts/extract_build_artifacts.py 368
+
+    # From CSV file with parallel extraction
+    uv run scripts/extract_build_artifacts.py --task-csv task_lists/test.csv --max-threads 4
 """
 
 import argparse
+import csv
 import json
 import re
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 
 
 def run_cmd(cmd: str, timeout: int = 600) -> tuple[int, str, str]:
@@ -81,9 +91,10 @@ def run_arvo_compile(container_name: str, no_sanitizers: bool = False) -> bool:
         print("  Compiling WITHOUT sanitizers (clean binaries)...")
         compile_cmd = (
             f"docker exec {container_name} bash -c '"
-            "export SANITIZER_FLAGS= && "
-            "export COVERAGE_FLAGS= && "
-            "arvo compile"
+            "export FUZZING_ENGINE=none && "
+            "export SANITIZER=none && "
+            "export ARCHITECTURE=x86_64 && "
+            "compile"
             "'"
         )
     else:
@@ -308,11 +319,131 @@ def analyze_task(task_id: str, data_dir: Path, output_dir: Path, no_sanitizers: 
     return result
 
 
+def read_tasks_from_csv(csv_path: Path) -> list[str]:
+    """Read task IDs from a CSV file. Extracts numeric ID from 'arvo:123' format."""
+    tasks = []
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            task_id = row.get("task") or row.get("task_id")
+            if task_id:
+                task_id = task_id.strip().strip('"')
+                # Extract numeric ID if in "arvo:123" format
+                if ":" in task_id:
+                    task_id = task_id.split(":")[1]
+                tasks.append(task_id)
+    return tasks
+
+
+# Global lock for updating JSON files
+json_lock = Lock()
+
+
+def process_single_task(
+    task_id: str,
+    data_dir: Path,
+    output_dir: Path,
+    no_sanitizers: bool,
+) -> dict:
+    """Process a single task and return the result."""
+    print(f"\n{'='*60}")
+    print(f"Processing Task: {task_id}")
+    print('='*60)
+
+    result = analyze_task(task_id, data_dir, output_dir, no_sanitizers=no_sanitizers)
+
+    # Print summary
+    if result.get('error'):
+        print(f"\n  ERROR: {result['error']}")
+    else:
+        print(f"\n  Summary:")
+        print(f"    Fuzzer: {result['fuzzer']}")
+        print(f"    Static libraries: {len(result['static_libs'])}")
+        print(f"    Object files: {len(result['object_files'])}")
+
+    return result
+
+
+def update_json_files(result: dict, output_dir: Path):
+    """Thread-safe update of JSON metadata files."""
+    task_id = result['task_id']
+
+    with json_lock:
+        unstripped_output = output_dir / 'deps.json'
+        stripped_output = output_dir / 'stripped' / 'deps.json'
+
+        # Load existing results
+        unstripped_results = {}
+        if unstripped_output.exists():
+            with open(unstripped_output) as f:
+                unstripped_results = json.load(f)
+
+        stripped_results = {}
+        if stripped_output.exists():
+            with open(stripped_output) as f:
+                stripped_results = json.load(f)
+
+        # Build unstripped entry
+        unstripped_results[f"arvo:{task_id}"] = {
+            'fuzzer': result['fuzzer'],
+            'static_libs': [
+                {'name': lib['name'], 'container_path': lib['container_path'], 'size_kb': lib['size_kb']}
+                for lib in result['static_libs']
+            ],
+            'object_files_count': len(result['object_files']),
+            'fuzzer_binary': {
+                'name': result['fuzzer_binary']['name'],
+                'size_mb': result['fuzzer_binary']['size_mb']
+            } if result['fuzzer_binary'] else None,
+            'error': result.get('error'),
+        }
+
+        # Build stripped entry
+        stripped_results[f"arvo:{task_id}"] = {
+            'fuzzer': result['fuzzer'],
+            'static_libs': [
+                {'name': lib['name'], 'container_path': lib['container_path'], 'size_kb': lib.get('stripped_size_kb')}
+                for lib in result['static_libs']
+            ],
+            'object_files_count': len(result['object_files']),
+            'fuzzer_binary': {
+                'name': result['fuzzer_binary']['name'],
+                'size_mb': result['fuzzer_binary'].get('stripped_size_mb')
+            } if result['fuzzer_binary'] else None,
+            'error': result.get('error'),
+        }
+
+        # Write both JSON files
+        unstripped_output.parent.mkdir(parents=True, exist_ok=True)
+        with open(unstripped_output, 'w') as f:
+            json.dump(unstripped_results, f, indent=2)
+
+        stripped_output.parent.mkdir(parents=True, exist_ok=True)
+        with open(stripped_output, 'w') as f:
+            json.dump(stripped_results, f, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Extract build artifacts from ARVO tasks"
     )
-    parser.add_argument("task_id", type=str, help="Task ID (e.g., 368)")
+    parser.add_argument(
+        "task_id",
+        type=str,
+        nargs="?",
+        help="Task ID (e.g., 368). Not needed if --task-csv is provided."
+    )
+    parser.add_argument(
+        "--task-csv",
+        type=Path,
+        help="Path to CSV file containing task IDs (column: 'task' or 'task_id')"
+    )
+    parser.add_argument(
+        "--max-threads",
+        type=int,
+        default=1,
+        help="Maximum number of parallel extractions (default: 1)"
+    )
     parser.add_argument(
         "--files-dir", "-d",
         type=Path,
@@ -326,96 +457,91 @@ def main():
     )
     args = parser.parse_args()
 
+    # Determine task list
+    if args.task_csv:
+        if not args.task_csv.exists():
+            print(f"ERROR: Task CSV not found: {args.task_csv}")
+            return 1
+        task_ids = read_tasks_from_csv(args.task_csv)
+        if not task_ids:
+            print("ERROR: No tasks found in CSV file")
+            return 1
+    elif args.task_id:
+        task_ids = [args.task_id]
+    else:
+        print("ERROR: Either task_id or --task-csv must be provided")
+        return 1
+
     data_dir = Path('/mnt/jailbreak-defense/exp/winniex/cybergym/cybergym_data/data/arvo')
 
     print("=" * 80)
     print("ARVO Build Artifacts Extraction")
     print("=" * 80)
-    print(f"Task: {args.task_id}")
+    print(f"Tasks: {len(task_ids)} ({', '.join(task_ids[:5])}{'...' if len(task_ids) > 5 else ''})")
     print(f"Output directory: {args.files_dir}")
     print(f"  - Unstripped: {args.files_dir}/{{task_id}}/")
     print(f"  - Stripped:   {args.files_dir}/stripped/{{task_id}}/")
     print(f"With sanitizers: {args.with_sanitizers}")
+    print(f"Max threads: {args.max_threads}")
 
-    print(f"\n{'='*60}")
-    print(f"Processing Task: {args.task_id}")
-    print('='*60)
+    no_sanitizers = not args.with_sanitizers
+    results = []
+    errors = []
 
-    result = analyze_task(args.task_id, data_dir, args.files_dir, no_sanitizers=not args.with_sanitizers)
-
-    # Print summary
-    if result.get('error'):
-        print(f"\n  ERROR: {result['error']}")
+    if args.max_threads == 1:
+        # Sequential processing
+        for task_id in task_ids:
+            result = process_single_task(task_id, data_dir, args.files_dir, no_sanitizers)
+            results.append(result)
+            update_json_files(result, args.files_dir)
+            if result.get('error'):
+                errors.append((task_id, result['error']))
     else:
-        print(f"\n  Summary:")
-        print(f"    Fuzzer: {result['fuzzer']}")
-        print(f"    Static libraries: {len(result['static_libs'])}")
-        for lib in result['static_libs'][:10]:
-            print(f"      - {lib['name']} ({lib['size_kb']} KB)")
-        if len(result['static_libs']) > 10:
-            print(f"      ... and {len(result['static_libs']) - 10} more")
-        print(f"    Object files: {len(result['object_files'])}")
+        # Parallel processing
+        with ThreadPoolExecutor(max_workers=args.max_threads) as executor:
+            future_to_task = {
+                executor.submit(
+                    process_single_task, task_id, data_dir, args.files_dir, no_sanitizers
+                ): task_id
+                for task_id in task_ids
+            }
 
-    # Update JSON output - one for unstripped, one for stripped
-    unstripped_output = args.files_dir / 'deps.json'
-    stripped_output = args.files_dir / 'stripped' / 'deps.json'
+            for future in as_completed(future_to_task):
+                task_id = future_to_task[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    update_json_files(result, args.files_dir)
+                    if result.get('error'):
+                        errors.append((task_id, result['error']))
+                except Exception as e:
+                    errors.append((task_id, str(e)))
+                    print(f"\n  ERROR processing {task_id}: {e}")
 
-    # Load existing results
-    unstripped_results = {}
-    if unstripped_output.exists():
-        with open(unstripped_output) as f:
-            unstripped_results = json.load(f)
+    # Final summary
+    print("\n" + "=" * 80)
+    print("Summary")
+    print("=" * 80)
+    print(f"Total tasks: {len(task_ids)}")
+    print(f"Successful: {len(task_ids) - len(errors)}")
+    print(f"Failed: {len(errors)}")
 
-    stripped_results = {}
-    if stripped_output.exists():
-        with open(stripped_output) as f:
-            stripped_results = json.load(f)
+    if errors:
+        print("\nFailed tasks:")
+        for task_id, error in errors:
+            print(f"  - {task_id}: {error}")
 
-    # Build unstripped entry
-    unstripped_results[f"arvo:{args.task_id}"] = {
-        'fuzzer': result['fuzzer'],
-        'static_libs': [
-            {'name': lib['name'], 'container_path': lib['container_path'], 'size_kb': lib['size_kb']}
-            for lib in result['static_libs']
-        ],
-        'object_files_count': len(result['object_files']),
-        'fuzzer_binary': {
-            'name': result['fuzzer_binary']['name'],
-            'size_mb': result['fuzzer_binary']['size_mb']
-        } if result['fuzzer_binary'] else None,
-        'error': result.get('error'),
-    }
-
-    # Build stripped entry
-    stripped_results[f"arvo:{args.task_id}"] = {
-        'fuzzer': result['fuzzer'],
-        'static_libs': [
-            {'name': lib['name'], 'container_path': lib['container_path'], 'size_kb': lib.get('stripped_size_kb')}
-            for lib in result['static_libs']
-        ],
-        'object_files_count': len(result['object_files']),
-        'fuzzer_binary': {
-            'name': result['fuzzer_binary']['name'],
-            'size_mb': result['fuzzer_binary'].get('stripped_size_mb')
-        } if result['fuzzer_binary'] else None,
-        'error': result.get('error'),
-    }
-
-    # Write both JSON files
-    unstripped_output.parent.mkdir(parents=True, exist_ok=True)
-    with open(unstripped_output, 'w') as f:
-        json.dump(unstripped_results, f, indent=2)
-    print(f"\nUnstripped metadata written to {unstripped_output}")
-
-    stripped_output.parent.mkdir(parents=True, exist_ok=True)
-    with open(stripped_output, 'w') as f:
-        json.dump(stripped_results, f, indent=2)
-    print(f"Stripped metadata written to {stripped_output}")
+    print(f"\nMetadata written to:")
+    print(f"  - {args.files_dir / 'deps.json'}")
+    print(f"  - {args.files_dir / 'stripped' / 'deps.json'}")
 
     print("\n" + "=" * 80)
     print("Done")
     print("=" * 80)
 
+    return 1 if errors else 0
+
 
 if __name__ == '__main__':
-    main()
+    import sys
+    sys.exit(main() or 0)

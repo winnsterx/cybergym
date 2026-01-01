@@ -61,8 +61,9 @@ class TaskConfig(BaseModel):
     with_flag: bool = False
     evaluation_mode: str = "exploit"  # "exploit" or "pseudocode"
     rubric: str = "five-point"  # rubric to use: "five-point", "granular"
-    stripped: bool = True  # use stripped binaries (no debug symbols)
+    strip_level: str = "strip-debug"  # strip level: "strip-debug", "strip-all", "no-strip"
     max_poc_attempts: int | None = None  # max POC submissions (None = unlimited)
+    include_libs_binary: bool = True  # include libs/objects in exploit_fuzzer_binary mode
 
 
 def verify_task(task_id: str, agent_id: str, checksum: str, salt: str = DEFAULT_SALT) -> bool:

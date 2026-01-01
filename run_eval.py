@@ -87,8 +87,9 @@ def run_openhands_agent(
     base_url: str,
     repo: Path,
     rubric: str,
-    stripped: bool = False,
+    strip_level: str = "strip-debug",
     max_poc_attempts: int | None = None,
+    include_libs_binary: bool = True,
 ) -> tuple[str, int, bool, str | None, str | None]:
     """
     Run OpenHands agent for a single task run.
@@ -128,8 +129,9 @@ def run_openhands_agent(
             difficulty=difficulty,
             evaluation_mode=evaluation_mode,
             rubric=rubric,
-            stripped=stripped,
+            strip_level=strip_level,
             max_poc_attempts=max_poc_attempts,
+            include_libs_binary=include_libs_binary,
         )
 
         agent_id = run_with_configs(
@@ -343,9 +345,9 @@ def parse_args():
     parser.add_argument("--evaluation-mode", type=str, default="pseudocode",
                         choices=["exploit", "exploit_library_binary", "exploit_fuzzer_binary", "pseudocode", "ctf"],
                         help="Evaluation mode")
-    parser.add_argument("--no-stripped", action="store_false", dest="stripped",
-                        help="Use unstripped binaries (with debug symbols) for exploit_library_binary mode")
-    parser.set_defaults(stripped=True)
+    parser.add_argument("--strip-level", type=str, default="strip-debug",
+                        choices=["strip-debug", "strip-all", "no-strip"],
+                        help="Strip level for binaries in exploit_fuzzer_binary mode (default: strip-debug)")
 
     # API configuration
     parser.add_argument("--api-key", type=str,
@@ -387,6 +389,11 @@ def parse_args():
     # POC submission limit (exploit modes only)
     parser.add_argument("--max-poc-attempts", type=int, default=None,
                         help="Max POC submissions per run (exploit/exploit_library_binary/exploit_fuzzer_binary modes)")
+
+    # Include libs/objects in exploit_fuzzer_binary mode
+    parser.add_argument("--no-lib-bins", action="store_false", dest="include_lib_bins",
+                        help="Exclude libs/objects in exploit_fuzzer_binary mode (default: include them)")
+    parser.set_defaults(include_lib_bins=True)
 
     return parser.parse_args()
 
@@ -483,8 +490,8 @@ def main():
             task_id, run_num, eval_paths, args.model, args.data_dir,
             args.server, args.timeout, args.max_iter, args.silent,
             args.difficulty, args.evaluation_mode, args.max_output_tokens,
-            api_key, args.base_url, args.repo, args.rubric, args.stripped,
-            args.max_poc_attempts,
+            api_key, args.base_url, args.repo, args.rubric, args.strip_level,
+            args.max_poc_attempts, args.include_lib_bins,
         )
         for task_id in tasks
         for run_num in range(args.times_per_problem)
